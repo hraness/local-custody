@@ -13,8 +13,8 @@ protected descriptor input.
 | Subpath | Surface |
 |---|---|
 | `@hraness/local-custody` | Whole stable surface |
-| `/private-paths` | `ensurePrivateDirectory`, `assertOwnedPath`, `readPrivateFile` |
-| `/atomic-publish` | `publishPrivateFile`, `createPrivateFileOnce` |
+| `/private-paths` | `ensurePrivateDirectory`, `assertOwnedPath`, `assertOwnedPathSync`, `readPrivateFile`, `readOwnedFileStable`, `readOwnedFileStableSync` |
+| `/atomic-publish` | `publishPrivateFile`, `createPrivateFileOnce`, `createPrivateFileOnceSync` |
 | `/control-socket` | `listenControlSocket`, `attachControlSocket`, `requestControlSocket` |
 | `/protected-input` | `readProtectedDescriptor`, `readProtectedStdin` |
 

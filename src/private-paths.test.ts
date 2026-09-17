@@ -6,8 +6,10 @@ import { join } from "node:path";
 
 import {
   assertOwnedPath,
+  assertOwnedPathSync,
   ensurePrivateDirectory,
   readOwnedFileStable,
+  readOwnedFileStableSync,
   readPrivateFile,
 } from "./private-paths.ts";
 
@@ -134,12 +136,77 @@ describe("readPrivateFile", () => {
 });
 
 describe("readOwnedFileStable", () => {
-  test("returns bounded content of an owned private file", async () => {
+  test("returns bounded content and identity of an owned private file", async () => {
     const base = await root();
     const file = join(base, "stable");
     await writeFile(file, "payload", { mode: 0o600 });
-    assert.equal((await readOwnedFileStable(file, 64)).toString("utf8"), "payload");
+    const read = await readOwnedFileStable(file, 64);
+    assert.equal(read.bytes.toString("utf8"), "payload");
+    const metadata = await lstat(file);
+    assert.deepEqual({ dev: read.dev, ino: read.ino }, { dev: metadata.dev, ino: metadata.ino });
     await assert.rejects(readOwnedFileStable(file, 4), /Unsafe private file/);
+  });
+
+  test("honors exactMode and minimumBytes expectations", async () => {
+    const base = await root();
+    const file = join(base, "exact");
+    await writeFile(file, "v", { mode: 0o600 });
+    const read = await readOwnedFileStable(file, 64, {
+      exactMode: 0o600,
+      minimumBytes: 1n,
+    });
+    assert.equal(read.bytes.toString("utf8"), "v");
+    await writeFile(join(base, "empty"), "", { mode: 0o600 });
+    await assert.rejects(
+      readOwnedFileStable(join(base, "empty"), 64, { minimumBytes: 1n }),
+      /Unsafe private file/,
+    );
+    await writeFile(join(base, "readonly"), "v", { mode: 0o400 });
+    await assert.rejects(
+      readOwnedFileStable(join(base, "readonly"), 64, { exactMode: 0o600 }),
+      /Unsafe private file/,
+    );
+  });
+});
+
+describe("sync twins", () => {
+  test("assertOwnedPathSync applies identical checks", async () => {
+    const base = await root();
+    const file = join(base, "secret");
+    await writeFile(file, "value", { mode: 0o600 });
+    const identity = assertOwnedPathSync(file, { kind: "file", exactMode: 0o600 });
+    const metadata = await lstat(file);
+    assert.deepEqual(identity, { dev: metadata.dev, ino: metadata.ino });
+    await writeFile(join(base, "leaky"), "v", { mode: 0o644 });
+    assert.throws(
+      () => assertOwnedPathSync(join(base, "leaky"), { kind: "file", exactMode: 0o600 }),
+      /Unsafe local file/,
+    );
+    const real = join(base, "real-dir");
+    await mkdir(real, { mode: 0o700 });
+    const alias = join(base, "alias");
+    await symlink(real, alias);
+    assert.throws(
+      () => assertOwnedPathSync(alias, { kind: "directory", canonical: true }),
+    );
+    assertOwnedPathSync(real, { kind: "directory", canonical: true });
+  });
+
+  test("readOwnedFileStableSync applies identical checks", async () => {
+    const base = await root();
+    const file = join(base, "stable");
+    await writeFile(file, "payload", { mode: 0o600 });
+    const read = readOwnedFileStableSync(file, 64, {
+      exactMode: 0o600,
+      minimumBytes: 1n,
+    });
+    assert.equal(read.bytes.toString("utf8"), "payload");
+    const metadata = await lstat(file);
+    assert.deepEqual({ dev: read.dev, ino: read.ino }, { dev: metadata.dev, ino: metadata.ino });
+    assert.throws(() => readOwnedFileStableSync(file, 4), /Unsafe private file/);
+    const link = join(base, "link");
+    await symlink(file, link);
+    assert.throws(() => readOwnedFileStableSync(link, 64));
   });
 });
 

@@ -38,6 +38,24 @@ The portable contract every implementation proves. Vectors live in
 8. Validation returns the object's `dev`/`ino` identity so callers can detect
    replacement across a time-of-check/time-of-use gap.
 
+### Stable read
+
+1. `open` the path `O_RDONLY | O_NOFOLLOW` — a symbolic link can never be
+   opened through this contract.
+2. `fstat` the descriptor: it must be a regular file, owned by the current
+   uid where one exists, within the byte bound, and with exactly one hard
+   link unless `links` says otherwise.
+3. Mode expectation defaults to owner-only (`mode & 0o077 === 0`);
+   `exactMode` replaces it with an exact `mode & 0o777` equality and
+   `minimumBytes` may demand a non-empty object.
+4. Read exactly the observed size; an early EOF means the file shrank during
+   the read — fail.
+5. Re-`lstat` the path and require the same object: device, inode, link
+   count, mode, owner, size, mtime, and ctime identical at nanosecond
+   precision where the platform exposes it.
+6. Return the bytes together with the read object's `dev`/`ino` identity so
+   callers can build custody evidence bound to the exact bytes read.
+
 ### Atomic publication
 
 1. The target name must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,126}$` and stay
@@ -96,3 +114,10 @@ The portable contract every implementation proves. Vectors live in
 3. A regular file must be uid-owned with `mode & 0o077 === 0`.
 4. Reads stop at EOF or the byte bound; exceeding the bound fails.
 5. Content is fatal-decoded UTF-8; the caller owns trimming and parsing.
+
+### Execution flavor
+
+Every filesystem rule applies identically in the asynchronous and the
+`*Sync` synchronous forms. The synchronous forms exist for products whose
+custody checks run inside genuinely synchronous setup paths; they change no
+expectation, check, or outcome.

@@ -61,6 +61,44 @@
       "outcome": "reject"
     }
   ],
+  "stableRead": [
+    {
+      "name": "private file read stably",
+      "arrange": { "kind": "file", "mode": "0600", "content": "payload" },
+      "expect": { "maximumBytes": 64 },
+      "outcome": "returns content plus dev/ino identity"
+    },
+    {
+      "name": "content above bound",
+      "arrange": { "kind": "file", "mode": "0600", "bytes": 200 },
+      "expect": { "maximumBytes": 64 },
+      "outcome": "reject"
+    },
+    {
+      "name": "read-only mode under exactMode 0600",
+      "arrange": { "kind": "file", "mode": "0400", "content": "v" },
+      "expect": { "exactMode": "0600", "maximumBytes": 64 },
+      "outcome": "reject"
+    },
+    {
+      "name": "empty file under minimumBytes 1",
+      "arrange": { "kind": "file", "mode": "0600", "bytes": 0 },
+      "expect": { "minimumBytes": 1, "maximumBytes": 64 },
+      "outcome": "reject"
+    },
+    {
+      "name": "symlink path",
+      "arrange": { "kind": "symlink", "targetMode": "0600" },
+      "expect": { "maximumBytes": 64 },
+      "outcome": "reject"
+    },
+    {
+      "name": "object replaced during read",
+      "arrange": { "kind": "file", "mode": "0600", "mutate": "rename-over during read" },
+      "expect": { "maximumBytes": 64 },
+      "outcome": "reject"
+    }
+  ],
   "publishName": [
     { "name": "capability", "outcome": "accept" },
     { "name": "state.v2.json", "outcome": "accept" },
