@@ -7,7 +7,7 @@
 - `src/*.test.ts` and `src/*.property.test.ts` own deterministic regressions and arbitrary-input laws.
 - `spec/custody.md` and `spec/vectors.json` own the portable contract every implementation (including a future Rust port) must reproduce.
 - `scripts/` owns the ESM build, absolute-root determinism check, canonical portfolio inventory, and clean packed-consumer smoke.
-- `.github/workflows/` owns read-only branch validation and checks-gated immutable GitHub Release automation.
+- `.github/workflows/` owns read-only branch validation, checks-gated immutable GitHub Release automation, and the tag-only `npm-release` environment's OIDC trusted-publishing mirror.
 - `package.json`, `portfolio-inventory.json`, `tsconfig.json`, `eslint.config.mjs`, and `bun.lock` own standalone package, portfolio, and verification configuration.
 
 # Guidelines
