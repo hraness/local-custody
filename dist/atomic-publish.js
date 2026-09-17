@@ -21,7 +21,11 @@ async function assertOwnedPath(path, expectation) {
   if (!kindMatches(metadata, expectation.kind) || metadata.isSymbolicLink() || expectedLinks !== undefined && metadata.nlink !== BigInt(expectedLinks) || uid !== undefined && metadata.uid !== BigInt(uid) || expectation.exactMode !== undefined && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode) || expectation.ownerOnly === true && (metadata.mode & 0o077n) !== 0n || expectation.canonical === true && await realpath(path) !== path || expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes || expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes) {
     throw new Error(`Unsafe local ${expectation.kind}.`);
   }
-  return { dev: Number(metadata.dev), ino: Number(metadata.ino) };
+  return {
+    dev: Number(metadata.dev),
+    ino: Number(metadata.ino),
+    size: Number(metadata.size)
+  };
 }
 function assertOwnedPathSync(path, expectation) {
   const metadata = lstatSync(path, { bigint: true });
@@ -30,7 +34,11 @@ function assertOwnedPathSync(path, expectation) {
   if (!kindMatches(metadata, expectation.kind) || metadata.isSymbolicLink() || expectedLinks !== undefined && metadata.nlink !== BigInt(expectedLinks) || uid !== undefined && metadata.uid !== BigInt(uid) || expectation.exactMode !== undefined && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode) || expectation.ownerOnly === true && (metadata.mode & 0o077n) !== 0n || expectation.canonical === true && realpathSync(path) !== path || expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes || expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes) {
     throw new Error(`Unsafe local ${expectation.kind}.`);
   }
-  return { dev: Number(metadata.dev), ino: Number(metadata.ino) };
+  return {
+    dev: Number(metadata.dev),
+    ino: Number(metadata.ino),
+    size: Number(metadata.size)
+  };
 }
 async function ensurePrivateDirectory(path) {
   const absolute = resolve(path);
@@ -131,6 +139,7 @@ import { randomUUID } from "node:crypto";
 import {
   closeSync as closeSync2,
   constants as constants2,
+  fchmodSync,
   fsyncSync,
   linkSync,
   openSync as openSync2,
@@ -156,6 +165,7 @@ var syncDirectory = async (directory) => {
 var writeStaged = async (staged, content) => {
   const handle = await open2(staged, constants2.O_CREAT | constants2.O_EXCL | constants2.O_WRONLY | constants2.O_NOFOLLOW, PRIVATE_FILE_MODE);
   try {
+    await handle.chmod(PRIVATE_FILE_MODE);
     await handle.writeFile(content);
     await handle.sync();
   } finally {
@@ -215,6 +225,7 @@ async function createPrivateFileOnce(directory, name, content) {
 var writeStagedSync = (staged, content) => {
   const descriptor = openSync2(staged, constants2.O_CREAT | constants2.O_EXCL | constants2.O_WRONLY | constants2.O_NOFOLLOW, PRIVATE_FILE_MODE);
   try {
+    fchmodSync(descriptor, PRIVATE_FILE_MODE);
     const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
     let offset = 0;
     while (offset < bytes.byteLength) {

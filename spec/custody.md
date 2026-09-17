@@ -35,8 +35,9 @@ The portable contract every implementation proves. Vectors live in
 6. Optional size bounds are inclusive and compared in bytes.
 7. When `canonical` is set, `realpath(path)` must equal `path` exactly — no
    component may resolve through a link.
-8. Validation returns the object's `dev`/`ino` identity so callers can detect
-   replacement across a time-of-check/time-of-use gap.
+8. Validation returns the object's `dev`/`ino` identity and observed size so
+   callers can detect replacement across a time-of-check/time-of-use gap and
+   build byte-bearing custody evidence.
 
 ### Stable read
 
@@ -61,7 +62,8 @@ The portable contract every implementation proves. Vectors live in
 1. The target name must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,126}$` and stay
    within 128 UTF-8 bytes.
 2. Write to a unique same-directory temporary created `O_CREAT | O_EXCL |
-   O_WRONLY | O_NOFOLLOW` with mode `0600`.
+   O_WRONLY | O_NOFOLLOW`, then `fchmod` `0600` so the staged mode is
+   deterministic under any umask.
 3. `fsync` the file, close it, run the caller's optional commit guard —
    a throwing guard aborts the publish — `rename` over the target, `fsync`
    the directory.
