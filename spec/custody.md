@@ -29,7 +29,8 @@ The portable contract every implementation proves. Vectors live in
 1. `lstat` only — a symbolic link always fails.
 2. Kind must match exactly: regular file, directory, or socket.
 3. `uid` must equal the current uid when the platform exposes one.
-4. When `exactMode` is given, `mode & 0o777` must equal it.
+4. When `exactMode` is given, `mode & 0o777` must equal it; when
+   `ownerOnly` is given, `mode & 0o077` must equal zero.
 5. Files and sockets default to exactly one hard link.
 6. Optional size bounds are inclusive and compared in bytes.
 7. When `canonical` is set, `realpath(path)` must equal `path` exactly — no
