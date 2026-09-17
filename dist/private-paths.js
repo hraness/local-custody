@@ -21,7 +21,11 @@ async function assertOwnedPath(path, expectation) {
   if (!kindMatches(metadata, expectation.kind) || metadata.isSymbolicLink() || expectedLinks !== undefined && metadata.nlink !== BigInt(expectedLinks) || uid !== undefined && metadata.uid !== BigInt(uid) || expectation.exactMode !== undefined && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode) || expectation.ownerOnly === true && (metadata.mode & 0o077n) !== 0n || expectation.canonical === true && await realpath(path) !== path || expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes || expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes) {
     throw new Error(`Unsafe local ${expectation.kind}.`);
   }
-  return { dev: Number(metadata.dev), ino: Number(metadata.ino) };
+  return {
+    dev: Number(metadata.dev),
+    ino: Number(metadata.ino),
+    size: Number(metadata.size)
+  };
 }
 function assertOwnedPathSync(path, expectation) {
   const metadata = lstatSync(path, { bigint: true });
@@ -30,7 +34,11 @@ function assertOwnedPathSync(path, expectation) {
   if (!kindMatches(metadata, expectation.kind) || metadata.isSymbolicLink() || expectedLinks !== undefined && metadata.nlink !== BigInt(expectedLinks) || uid !== undefined && metadata.uid !== BigInt(uid) || expectation.exactMode !== undefined && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode) || expectation.ownerOnly === true && (metadata.mode & 0o077n) !== 0n || expectation.canonical === true && realpathSync(path) !== path || expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes || expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes) {
     throw new Error(`Unsafe local ${expectation.kind}.`);
   }
-  return { dev: Number(metadata.dev), ino: Number(metadata.ino) };
+  return {
+    dev: Number(metadata.dev),
+    ino: Number(metadata.ino),
+    size: Number(metadata.size)
+  };
 }
 async function ensurePrivateDirectory(path) {
   const absolute = resolve(path);

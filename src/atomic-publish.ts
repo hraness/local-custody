@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
+  fchmodSync,
   fsyncSync,
   linkSync,
   openSync,
@@ -44,6 +45,7 @@ const writeStaged = async (
     PRIVATE_FILE_MODE,
   );
   try {
+    await handle.chmod(PRIVATE_FILE_MODE);
     await handle.writeFile(content);
     await handle.sync();
   } finally {
@@ -136,6 +138,7 @@ const writeStagedSync = (staged: string, content: string | Buffer): void => {
     PRIVATE_FILE_MODE,
   );
   try {
+    fchmodSync(descriptor, PRIVATE_FILE_MODE);
     const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
     let offset = 0;
     while (offset < bytes.byteLength) {

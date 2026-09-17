@@ -29,10 +29,12 @@ export interface OwnedPathExpectation {
   readonly maximumBytes?: bigint;
 }
 
-/** Device and inode identity of a validated filesystem object. */
+/** Device, inode, and size of a validated filesystem object. */
 export interface OwnedPathIdentity {
   readonly dev: number;
   readonly ino: number;
+  /** Size in bytes as observed at validation time. */
+  readonly size: number;
 }
 
 /** Contents plus identity of a file that passed a stable bounded read. */
@@ -92,7 +94,11 @@ export async function assertOwnedPath(
   ) {
     throw new Error(`Unsafe local ${expectation.kind}.`);
   }
-  return { dev: Number(metadata.dev), ino: Number(metadata.ino) };
+  return {
+    dev: Number(metadata.dev),
+    ino: Number(metadata.ino),
+    size: Number(metadata.size),
+  };
 }
 
 /** Synchronous form of {@link assertOwnedPath} with identical checks. */
@@ -117,7 +123,11 @@ export function assertOwnedPathSync(
   ) {
     throw new Error(`Unsafe local ${expectation.kind}.`);
   }
-  return { dev: Number(metadata.dev), ino: Number(metadata.ino) };
+  return {
+    dev: Number(metadata.dev),
+    ino: Number(metadata.ino),
+    size: Number(metadata.size),
+  };
 }
 
 /**

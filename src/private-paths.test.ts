@@ -176,7 +176,11 @@ describe("sync twins", () => {
     await writeFile(file, "value", { mode: 0o600 });
     const identity = assertOwnedPathSync(file, { kind: "file", exactMode: 0o600 });
     const metadata = await lstat(file);
-    assert.deepEqual(identity, { dev: metadata.dev, ino: metadata.ino });
+    assert.deepEqual(identity, {
+      dev: metadata.dev,
+      ino: metadata.ino,
+      size: metadata.size,
+    });
     await writeFile(join(base, "leaky"), "v", { mode: 0o644 });
     assert.throws(
       () => assertOwnedPathSync(join(base, "leaky"), { kind: "file", exactMode: 0o600 }),
@@ -217,7 +221,11 @@ describe("assertOwnedPath identity and canonicality", () => {
     await writeFile(file, "v", { mode: 0o600 });
     const identity = await assertOwnedPath(file, { kind: "file", exactMode: 0o600 });
     const metadata = await lstat(file);
-    assert.deepEqual(identity, { dev: metadata.dev, ino: metadata.ino });
+    assert.deepEqual(identity, {
+      dev: metadata.dev,
+      ino: metadata.ino,
+      size: metadata.size,
+    });
   });
 
   test("canonical rejects a path that resolves through a link", async () => {
