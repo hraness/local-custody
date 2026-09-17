@@ -1,0 +1,129 @@
+{
+  "contract": "hraness.local-custody-vectors/v1",
+  "note": "Each case names the function under test, the arranged state, and the required outcome. A conforming port reproduces every outcome.",
+  "ownedPath": [
+    {
+      "name": "private file within bounds",
+      "arrange": { "kind": "file", "mode": "0600", "bytes": 5 },
+      "expect": { "kind": "file", "exactMode": "0600", "maximumBytes": 16 },
+      "outcome": "accept"
+    },
+    {
+      "name": "group-readable file",
+      "arrange": { "kind": "file", "mode": "0640" },
+      "expect": { "kind": "file", "exactMode": "0600" },
+      "outcome": "reject"
+    },
+    {
+      "name": "symbolic link to private file",
+      "arrange": { "kind": "symlink", "targetMode": "0600" },
+      "expect": { "kind": "file" },
+      "outcome": "reject"
+    },
+    {
+      "name": "hard-linked alias",
+      "arrange": { "kind": "file", "mode": "0600", "links": 2 },
+      "expect": { "kind": "file" },
+      "outcome": "reject"
+    },
+    {
+      "name": "regular file where socket expected",
+      "arrange": { "kind": "file", "mode": "0600" },
+      "expect": { "kind": "socket" },
+      "outcome": "reject"
+    },
+    {
+      "name": "socket with permissive mode",
+      "arrange": { "kind": "socket", "mode": "0660" },
+      "expect": { "kind": "socket", "exactMode": "0600" },
+      "outcome": "reject"
+    }
+  ],
+  "privateDirectory": [
+    {
+      "name": "missing directory",
+      "arrange": { "exists": false },
+      "outcome": "created mode 0700"
+    },
+    {
+      "name": "permissive existing directory",
+      "arrange": { "mode": "0755" },
+      "outcome": "reject"
+    },
+    {
+      "name": "symlinked directory",
+      "arrange": { "kind": "symlink" },
+      "outcome": "reject"
+    },
+    {
+      "name": "noncanonical parent",
+      "arrange": { "parent": "symlink" },
+      "outcome": "reject"
+    }
+  ],
+  "publishName": [
+    { "name": "capability", "outcome": "accept" },
+    { "name": "state.v2.json", "outcome": "accept" },
+    { "name": "../escape", "outcome": "reject" },
+    { "name": "a/b", "outcome": "reject" },
+    { "name": "", "outcome": "reject" },
+    { "name": ".hidden", "outcome": "reject" },
+    { "name": "..", "outcome": "reject" },
+    { "name": "a b", "outcome": "reject" },
+    { "name": "a\nb", "outcome": "reject" }
+  ],
+  "controlFrame": [
+    {
+      "name": "single complete request",
+      "wire": "{\"ping\":1}\\n",
+      "outcome": "one handler call, one bounded response line"
+    },
+    {
+      "name": "unparsable frame",
+      "wire": "not-json\\n",
+      "outcome": "failure response, connection ends"
+    },
+    {
+      "name": "empty frame",
+      "wire": "\\n",
+      "outcome": "failure response, connection ends"
+    },
+    {
+      "name": "oversize frame without newline",
+      "wire": "129 bytes with bound 64",
+      "outcome": "connection destroyed"
+    },
+    {
+      "name": "surplus pipelined frame past per-connection bound",
+      "wire": "two frames with maximumRequestsPerConnection 1",
+      "outcome": "failure response, connection ends"
+    },
+    {
+      "name": "partial frame then EOF",
+      "wire": "{\"ping\":1 then FIN",
+      "outcome": "connection destroyed, no response"
+    }
+  ],
+  "protectedInput": [
+    {
+      "name": "private regular file",
+      "arrange": { "kind": "file", "mode": "0600", "content": "token" },
+      "outcome": "returns decoded content"
+    },
+    {
+      "name": "permissive regular file",
+      "arrange": { "kind": "file", "mode": "0644" },
+      "outcome": "reject"
+    },
+    {
+      "name": "terminal descriptor",
+      "arrange": { "kind": "tty" },
+      "outcome": "reject"
+    },
+    {
+      "name": "input beyond bound",
+      "arrange": { "kind": "file", "mode": "0600", "bytes": 128, "bound": 64 },
+      "outcome": "reject"
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "name": "@hraness/local-custody",
+  "version": "0.1.0",
+  "description": "Owner-only local custody primitives for Hraness product CLIs.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "packageManager": "bun@1.3.14",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hraness/local-custody.git"
+  },
+  "homepage": "https://github.com/hraness/local-custody#readme",
+  "bugs": {
+    "url": "https://github.com/hraness/local-custody/issues"
+  },
+  "keywords": [
+    "custody",
+    "unix-socket",
+    "local-ipc",
+    "security",
+    "typescript"
+  ],
+  "exports": {
+    ".": {
+      "bun": "./dist/index.js",
+      "types": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./private-paths": {
+      "bun": "./dist/private-paths.js",
+      "types": "./src/private-paths.ts",
+      "import": "./dist/private-paths.js",
+      "default": "./dist/private-paths.js"
+    },
+    "./atomic-publish": {
+      "bun": "./dist/atomic-publish.js",
+      "types": "./src/atomic-publish.ts",
+      "import": "./dist/atomic-publish.js",
+      "default": "./dist/atomic-publish.js"
+    },
+    "./control-socket": {
+      "bun": "./dist/control-socket.js",
+      "types": "./src/control-socket.ts",
+      "import": "./dist/control-socket.js",
+      "default": "./dist/control-socket.js"
+    },
+    "./protected-input": {
+      "bun": "./dist/protected-input.js",
+      "types": "./src/protected-input.ts",
+      "import": "./dist/protected-input.js",
+      "default": "./dist/protected-input.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "spec",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun run ./scripts/build.ts",
+    "lint": "eslint src scripts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test ./src",
+    "test:property": "bun test ./src/*.property.test.ts",
+    "test:package": "bun run ./scripts/package-smoke.ts",
+    "check:determinism": "bun run ./scripts/check-determinism.ts",
+    "check:portfolio-inventory": "bun run ./scripts/check-portfolio-inventory.ts",
+    "check": "bun run check:portfolio-inventory && bun run lint && bun run typecheck && bun run test && bun run build && bun run check:determinism && bun run test:package",
+    "prepack": "bun run check"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/bun": "^1.3.14",
+    "@types/node": "^24.10.0",
+    "eslint": "^9.39.2",
+    "fast-check": "^4.9.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "8.53.1"
+  },
+  "peerDependencies": {}
+}

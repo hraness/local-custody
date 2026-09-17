@@ -1,0 +1,24 @@
+{
+  "contract": "hraness.portfolio-inventory/v1",
+  "formatVersion": 1,
+  "repository": "hraness/local-custody",
+  "components": [
+    {
+      "kind": "package",
+      "name": "@hraness/local-custody",
+      "path": ".",
+      "visibility": "public",
+      "version": "0.1.0"
+    }
+  ],
+  "dependencies": [],
+  "deployments": [],
+  "brands": [],
+  "publications": [
+    {
+      "component": "@hraness/local-custody",
+      "packageName": "@hraness/local-custody",
+      "repository": "hraness/local-custody"
+    }
+  ]
+}
