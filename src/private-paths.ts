@@ -11,6 +11,8 @@ export interface OwnedPathExpectation {
   readonly kind: OwnedPathKind;
   /** Exact permission bits: `(mode & 0o777)` must equal this value. */
   readonly exactMode?: number;
+  /** When true, group/other bits must be zero: `mode & 0o077 === 0`. */
+  readonly ownerOnly?: boolean;
   /** Exact hard-link count. Defaults to 1 for files and sockets. */
   readonly links?: number;
   /** When true, `path` must already be its own canonical realpath. */
@@ -56,6 +58,7 @@ export async function assertOwnedPath(
     || (uid !== undefined && metadata.uid !== BigInt(uid))
     || (expectation.exactMode !== undefined
       && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode))
+    || (expectation.ownerOnly === true && (metadata.mode & 0o077n) !== 0n)
     || (expectation.canonical === true && (await realpath(path)) !== path)
     || (expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes)
     || (expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes)
