@@ -160,7 +160,8 @@ export function attachControlSocket(
       while (true) {
         const newline = received.indexOf(0x0a);
         if (newline < 0) {
-          if (received.byteLength > bounds.maximumFrameBytes) socket.destroy();
+          // A buffer at the bound with no newline can never complete a frame.
+          if (received.byteLength >= bounds.maximumFrameBytes) socket.destroy();
           return;
         }
         if (newline === 0 || newline + 1 > bounds.maximumFrameBytes || requests >= bounds.maximumRequests) {
@@ -210,7 +211,11 @@ export function attachControlSocket(
         closing = true;
         for (const client of clients) client.destroy();
         await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())));
+          server.close((error) => (
+            error !== undefined
+            && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING"
+              ? reject(error)
+              : resolve())));
         await Promise.allSettled([...work]);
       })();
       return closePromise;
@@ -352,7 +357,7 @@ export async function requestControlSocket<T>(
         settle(error instanceof Error ? error : new Error("Control socket changed.")));
     });
     socket.on("data", (chunk) => {
-      buffer = Buffer.concat([buffer, chunk]);
+      buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
       if (buffer.length > maximumResponseBytes) {
         settle(new Error("Control response exceeds its frame limit."));
         return;
