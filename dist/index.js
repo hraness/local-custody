@@ -286,7 +286,7 @@ function attachControlSocket(server, options) {
         closing = true;
         for (const client of clients)
           client.destroy();
-        await new Promise((resolve2, reject) => server.close((error) => error ? reject(error) : resolve2()));
+        await new Promise((resolve2, reject) => server.close((error) => error !== undefined && error.code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve2()));
         await Promise.allSettled([...work]);
       })();
       return closePromise;
@@ -389,7 +389,7 @@ async function requestControlSocket(options) {
       }).catch((error) => settle(error instanceof Error ? error : new Error("Control socket changed.")));
     });
     socket.on("data", (chunk) => {
-      buffer = Buffer.concat([buffer, chunk]);
+      buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
       if (buffer.length > maximumResponseBytes) {
         settle(new Error("Control response exceeds its frame limit."));
         return;

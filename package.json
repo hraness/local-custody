@@ -1,6 +1,6 @@
 {
   "name": "@hraness/local-custody",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Owner-only local custody primitives for Hraness product CLIs.",
   "license": "MIT",
   "type": "module",
