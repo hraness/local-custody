@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -129,5 +129,28 @@ describe("readPrivateFile", () => {
     const link = join(base, "link");
     await symlink(file, link);
     await assert.rejects(readPrivateFile(link, 64));
+  });
+});
+
+describe("assertOwnedPath identity and canonicality", () => {
+  test("returns the dev/ino identity of a validated object", async () => {
+    const base = await root();
+    const file = join(base, "identity");
+    await writeFile(file, "v", { mode: 0o600 });
+    const identity = await assertOwnedPath(file, { kind: "file", exactMode: 0o600 });
+    const metadata = await lstat(file);
+    assert.deepEqual(identity, { dev: metadata.dev, ino: metadata.ino });
+  });
+
+  test("canonical rejects a path that resolves through a link", async () => {
+    const base = await root();
+    const real = join(base, "real-dir");
+    await mkdir(real, { mode: 0o700 });
+    const alias = join(base, "alias");
+    await symlink(real, alias);
+    await assert.rejects(
+      assertOwnedPath(alias, { kind: "directory", canonical: true }),
+    );
+    await assertOwnedPath(real, { kind: "directory", canonical: true });
   });
 });

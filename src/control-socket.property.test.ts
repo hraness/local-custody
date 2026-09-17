@@ -28,7 +28,7 @@ describe("control socket round trip", () => {
     const server = await listenControlSocket({
       socketPath: join(await dir, "c.sock"),
       maximumFrameBytes: 65_536,
-      failureResponse: { ok: false },
+      failureResponse: () => ({ ok: false }),
       onRequest: (request) => ({ ok: true, echo: request }),
     });
     servers.push(server);
@@ -56,7 +56,7 @@ describe("control socket round trip", () => {
     const server = await listenControlSocket({
       socketPath: join(dir, "c.sock"),
       maximumFrameBytes: 65_536,
-      failureResponse: { ok: false },
+      failureResponse: () => ({ ok: false }),
       onRequest: () => ({ pad: "x".repeat(4_096) }),
     });
     servers.push(server);

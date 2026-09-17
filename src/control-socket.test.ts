@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import assert from "node:assert/strict";
-import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { connect } from "node:net";
+import { chmod, lstat, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  attachControlSocket,
   listenControlSocket,
   requestControlSocket,
   type ControlSocketServer,
@@ -32,7 +33,7 @@ afterEach(async () => {
 });
 
 const echo = {
-  failureResponse: { ok: false, code: "failed" },
+  failureResponse: () => ({ ok: false, code: "failed" }),
   onRequest: (request: unknown) => ({ ok: true, echo: request }),
 };
 
@@ -153,7 +154,7 @@ describe("requestControlSocket", () => {
     const dir = await root();
     const server = await listen({
       socketPath: join(dir, "c.sock"), maximumFrameBytes: 1_024,
-      failureResponse: { ok: false },
+      failureResponse: () => ({ ok: false }),
       onRequest: () => new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 2_000)),
     });
     await assert.rejects(requestControlSocket({
@@ -163,6 +164,19 @@ describe("requestControlSocket", () => {
       timeoutMs: 200,
       parseResponse: (value) => value,
     }), /timed out/);
+  });
+
+  test("rejects without creating a missing directory", async () => {
+    const dir = await root();
+    const missing = join(dir, "absent", "c.sock");
+    await assert.rejects(requestControlSocket({
+      socketPath: missing, request: { n: 1 }, maximumResponseBytes: 4_096,
+      timeoutMs: 1_000, parseResponse: (value) => value,
+    }));
+    await assert.rejects(
+      lstat(join(dir, "absent")),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT",
+    );
   });
 
   test("rejects requests to a missing socket", async () => {
@@ -187,5 +201,55 @@ describe("requestControlSocket", () => {
       lstat(path),
       (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT",
     );
+  });
+
+  test("close is idempotent and leaves other directory entries", async () => {
+    const dir = await root();
+    const path = join(dir, "c.sock");
+    const neighbor = join(dir, "neighbor.txt");
+    await writeFile(neighbor, "keep", { mode: 0o600 });
+    const server = await listenControlSocket({
+      socketPath: path, maximumFrameBytes: 1_024, ...echo,
+    });
+    await server.close();
+    await server.close();
+    assert.equal((await lstat(neighbor)).isFile(), true);
+  });
+});
+
+describe("attachControlSocket", () => {
+  test("serves a caller-bound socket and maps failure reasons", async () => {
+    const dir = await root();
+    const path = join(dir, "attached.sock");
+    const server = createServer();
+    const reasons: string[] = [];
+    const transport = attachControlSocket(server, {
+      maximumFrameBytes: 1_024,
+      onRequest: (request) => ({ ok: true, echo: request }),
+      failureResponse: (reason) => { reasons.push(reason); return { ok: false, reason }; },
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(path, () => resolve());
+      });
+      await chmod(path, 0o600);
+      const response = await requestControlSocket({
+        socketPath: path, request: { n: 1 }, maximumResponseBytes: 4_096,
+        timeoutMs: 5_000, parseResponse: (v) => v as { ok: boolean; echo: unknown },
+      });
+      assert.deepEqual(response, { ok: true, echo: { n: 1 } });
+      const failed = await new Promise<Buffer>((resolve, reject) => {
+        const socket = connect(path);
+        socket.once("connect", () => socket.write("not-json\n"));
+        socket.on("data", resolve);
+        socket.once("error", reject);
+      });
+      assert.deepEqual(JSON.parse(failed.toString("utf8").trim()), { ok: false, reason: "invalid-request" });
+      assert.deepEqual(reasons, ["invalid-request"]);
+    } finally {
+      await transport.close();
+      await unlink(path).catch(() => undefined);
+    }
   });
 });

@@ -1,7 +1,7 @@
 // src/private-paths.ts
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 var PRIVATE_DIRECTORY_MODE = 448;
 var PRIVATE_FILE_MODE = 384;
 var ownerUid = () => typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -10,14 +10,17 @@ async function assertOwnedPath(path, expectation) {
   const metadata = await lstat(path, { bigint: true });
   const uid = ownerUid();
   const expectedLinks = expectation.links ?? (expectation.kind === "directory" ? undefined : 1n);
-  if (!kindMatches(metadata, expectation.kind) || metadata.isSymbolicLink() || expectedLinks !== undefined && metadata.nlink !== BigInt(expectedLinks) || uid !== undefined && metadata.uid !== BigInt(uid) || expectation.exactMode !== undefined && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode) || expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes || expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes) {
+  if (!kindMatches(metadata, expectation.kind) || metadata.isSymbolicLink() || expectedLinks !== undefined && metadata.nlink !== BigInt(expectedLinks) || uid !== undefined && metadata.uid !== BigInt(uid) || expectation.exactMode !== undefined && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode) || expectation.canonical === true && await realpath(path) !== path || expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes || expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes) {
     throw new Error(`Unsafe local ${expectation.kind}.`);
   }
+  return { dev: Number(metadata.dev), ino: Number(metadata.ino) };
 }
 async function ensurePrivateDirectory(path) {
-  const resolved = resolve(path);
-  const parent = await realpath(dirname(resolved));
-  const absolute = join(parent, basename(resolved));
+  const absolute = resolve(path);
+  const parent = dirname(absolute);
+  if (await realpath(parent) !== parent) {
+    throw new Error("Directory parent must be physical.");
+  }
   try {
     await mkdir(absolute, { mode: PRIVATE_DIRECTORY_MODE });
   } catch (error) {

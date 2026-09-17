@@ -1,16 +1,58 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { open, rename, unlink } from "node:fs/promises";
+import { link, open, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { PRIVATE_FILE_MODE, assertOwnedPath } from "./private-paths.js";
 
 const safeFileName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,126}$/u;
 
+const assertSafeName = (name: string): void => {
+  if (!safeFileName.test(name) || Buffer.byteLength(name) > 128) {
+    throw new Error("Unsafe publish name.");
+  }
+};
+
+const syncDirectory = async (directory: string): Promise<void> => {
+  const handle = await open(directory, constants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+};
+
+const writeStaged = async (
+  staged: string,
+  content: string | Buffer,
+): Promise<void> => {
+  const handle = await open(
+    staged,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+    PRIVATE_FILE_MODE,
+  );
+  try {
+    await handle.writeFile(content);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+};
+
+export interface PublishPrivateFileOptions {
+  /**
+   * Runs after the staged file is written and synced but before it is
+   * renamed over the target. Throwing aborts the publish and removes the
+   * staging file — the seam for compare-and-swap guards.
+   */
+  readonly beforeCommit?: (target: string) => void | Promise<void>;
+}
+
 /**
  * Atomically publish `content` as `name` inside an already-private directory:
  * create a unique temporary file mode-0600 without following links, write and
- * fsync it, rename it over the target, then re-validate the published object.
+ * fsync it, run the optional commit guard, rename it over the target, fsync the
+ * directory, then re-validate the published object.
  *
  * The rename is atomic for same-directory targets; a reader that validates the
  * published name after this returns sees complete content under private mode.
@@ -19,25 +61,17 @@ export async function publishPrivateFile(
   directory: string,
   name: string,
   content: string | Buffer,
+  options: PublishPrivateFileOptions = {},
 ): Promise<void> {
-  if (!safeFileName.test(name) || Buffer.byteLength(name) > 128) {
-    throw new Error("Unsafe publish name.");
-  }
+  assertSafeName(name);
+  const target = join(directory, name);
   const temporary = join(directory, `.${name}.${randomUUID()}.tmp`);
-  const handle = await open(
-    temporary,
-    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
-    PRIVATE_FILE_MODE,
-  );
   try {
-    try {
-      await handle.writeFile(content);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(temporary, join(directory, name));
-    await assertOwnedPath(join(directory, name), {
+    await writeStaged(temporary, content);
+    await options.beforeCommit?.(target);
+    await rename(temporary, target);
+    await syncDirectory(directory);
+    await assertOwnedPath(target, {
       kind: "file",
       exactMode: PRIVATE_FILE_MODE,
       links: 1,
@@ -45,5 +79,40 @@ export async function publishPrivateFile(
   } catch (error: unknown) {
     await unlink(temporary).catch(() => undefined);
     throw error;
+  }
+}
+
+/**
+ * Create `name` exactly once with private content: stage the bytes, then
+ * hard-link the staging file to the target so an existing name is never
+ * replaced. Returns whether this call created the file. The staging name is
+ * always removed.
+ */
+export async function createPrivateFileOnce(
+  directory: string,
+  name: string,
+  content: string | Buffer,
+): Promise<"created" | "existing"> {
+  assertSafeName(name);
+  const target = join(directory, name);
+  const temporary = join(directory, `.${name}.${randomUUID()}.tmp`);
+  try {
+    await writeStaged(temporary, content);
+    try {
+      await link(temporary, target);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return "existing";
+      throw error;
+    }
+    await syncDirectory(directory);
+    await assertOwnedPath(target, {
+      kind: "file",
+      exactMode: PRIVATE_FILE_MODE,
+      links: 2,
+    });
+    return "created";
+  } finally {
+    await unlink(temporary).catch(() => undefined);
+    await syncDirectory(directory).catch(() => undefined);
   }
 }

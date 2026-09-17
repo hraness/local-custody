@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 export const PRIVATE_DIRECTORY_MODE = 0o700;
 export const PRIVATE_FILE_MODE = 0o600;
@@ -13,8 +13,16 @@ export interface OwnedPathExpectation {
   readonly exactMode?: number;
   /** Exact hard-link count. Defaults to 1 for files and sockets. */
   readonly links?: number;
+  /** When true, `path` must already be its own canonical realpath. */
+  readonly canonical?: boolean;
   readonly minimumBytes?: bigint;
   readonly maximumBytes?: bigint;
+}
+
+/** Device and inode identity of a validated filesystem object. */
+export interface OwnedPathIdentity {
+  readonly dev: number;
+  readonly ino: number;
 }
 
 const ownerUid = (): number | undefined =>
@@ -37,7 +45,7 @@ const kindMatches = (
 export async function assertOwnedPath(
   path: string,
   expectation: OwnedPathExpectation,
-): Promise<void> {
+): Promise<OwnedPathIdentity> {
   const metadata = await lstat(path, { bigint: true });
   const uid = ownerUid();
   const expectedLinks = expectation.links ?? (expectation.kind === "directory" ? undefined : 1n);
@@ -48,22 +56,27 @@ export async function assertOwnedPath(
     || (uid !== undefined && metadata.uid !== BigInt(uid))
     || (expectation.exactMode !== undefined
       && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode))
+    || (expectation.canonical === true && (await realpath(path)) !== path)
     || (expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes)
     || (expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes)
   ) {
     throw new Error(`Unsafe local ${expectation.kind}.`);
   }
+  return { dev: Number(metadata.dev), ino: Number(metadata.ino) };
 }
 
 /**
- * Resolve `path`, prove its parent is physical, create it mode-0700 when
- * missing, then prove it is an owned, private, canonical directory.
+ * Create `path` mode-0700 when missing, then prove it is an owned, private,
+ * canonical directory. The parent chain must already be physical — a
+ * symlinked ancestor fails closed rather than retargeting the directory.
  * Returns the resolved absolute path.
  */
 export async function ensurePrivateDirectory(path: string): Promise<string> {
-  const resolved = resolve(path);
-  const parent = await realpath(dirname(resolved));
-  const absolute = join(parent, basename(resolved));
+  const absolute = resolve(path);
+  const parent = dirname(absolute);
+  if ((await realpath(parent)) !== parent) {
+    throw new Error("Directory parent must be physical.");
+  }
   try {
     await mkdir(absolute, { mode: PRIVATE_DIRECTORY_MODE });
   } catch (error: unknown) {
@@ -71,7 +84,7 @@ export async function ensurePrivateDirectory(path: string): Promise<string> {
   }
   const metadata = await lstat(absolute);
   if (
-    await realpath(absolute) !== absolute
+    (await realpath(absolute)) !== absolute
     || !metadata.isDirectory()
     || metadata.isSymbolicLink()
     || (ownerUid() !== undefined && metadata.uid !== ownerUid())
