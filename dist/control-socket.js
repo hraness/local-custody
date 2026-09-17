@@ -1,7 +1,7 @@
 // src/private-paths.ts
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 var PRIVATE_DIRECTORY_MODE = 448;
 var PRIVATE_FILE_MODE = 384;
 var ownerUid = () => typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -10,14 +10,17 @@ async function assertOwnedPath(path, expectation) {
   const metadata = await lstat(path, { bigint: true });
   const uid = ownerUid();
   const expectedLinks = expectation.links ?? (expectation.kind === "directory" ? undefined : 1n);
-  if (!kindMatches(metadata, expectation.kind) || metadata.isSymbolicLink() || expectedLinks !== undefined && metadata.nlink !== BigInt(expectedLinks) || uid !== undefined && metadata.uid !== BigInt(uid) || expectation.exactMode !== undefined && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode) || expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes || expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes) {
+  if (!kindMatches(metadata, expectation.kind) || metadata.isSymbolicLink() || expectedLinks !== undefined && metadata.nlink !== BigInt(expectedLinks) || uid !== undefined && metadata.uid !== BigInt(uid) || expectation.exactMode !== undefined && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode) || expectation.canonical === true && await realpath(path) !== path || expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes || expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes) {
     throw new Error(`Unsafe local ${expectation.kind}.`);
   }
+  return { dev: Number(metadata.dev), ino: Number(metadata.ino) };
 }
 async function ensurePrivateDirectory(path) {
-  const resolved = resolve(path);
-  const parent = await realpath(dirname(resolved));
-  const absolute = join(parent, basename(resolved));
+  const absolute = resolve(path);
+  const parent = dirname(absolute);
+  if (await realpath(parent) !== parent) {
+    throw new Error("Directory parent must be physical.");
+  }
   try {
     await mkdir(absolute, { mode: PRIVATE_DIRECTORY_MODE });
   } catch (error) {
@@ -49,7 +52,7 @@ async function readPrivateFile(path, maximumBytes) {
 }
 
 // src/control-socket.ts
-import { chmod, lstat as lstat2, unlink } from "node:fs/promises";
+import { chmod, unlink } from "node:fs/promises";
 import { createServer, connect } from "node:net";
 import { dirname as dirname2 } from "node:path";
 var MAXIMUM_SOCKET_PATH_BYTES = 100;
@@ -71,48 +74,46 @@ var boundedCount = (value, fallback, maximum) => {
   }
   return candidate;
 };
-async function socketIdentity(path) {
-  await assertOwnedPath(path, { kind: "socket", exactMode: PRIVATE_FILE_MODE, links: 1 });
-  const metadata = await lstat2(path);
-  return { dev: metadata.dev, ino: metadata.ino };
-}
+var socketIdentity = (path) => assertOwnedPath(path, { kind: "socket", exactMode: PRIVATE_FILE_MODE, links: 1 });
 var sameIdentity = (left, right) => left.dev === right.dev && left.ino === right.ino;
-async function listenControlSocket(options) {
-  const socketPath = options.socketPath;
-  if (Buffer.byteLength(socketPath) > MAXIMUM_SOCKET_PATH_BYTES) {
-    throw new Error("Control socket path exceeds its platform limit.");
-  }
+var resolveBounds = (options) => {
   const maximumFrameBytes = options.maximumFrameBytes;
   if (!Number.isSafeInteger(maximumFrameBytes) || maximumFrameBytes < 1) {
     throw new Error("Control frame bound must be a positive integer.");
   }
-  const maximumResponseBytes = options.maximumResponseBytes ?? maximumFrameBytes;
-  const maximumConnections = boundedCount(options.maximumConnections, DEFAULT_MAXIMUM_CONNECTIONS, 1024);
-  const maximumRequests = boundedCount(options.maximumRequestsPerConnection, 1, 1024);
-  const headerTimeoutMs = boundedTimeoutMs(options.headerTimeoutMs, DEFAULT_HEADER_TIMEOUT_MS);
-  const idleTimeoutMs = boundedTimeoutMs(options.idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS);
-  await ensurePrivateDirectory(dirname2(socketPath));
-  try {
-    await assertOwnedPath(socketPath, { kind: "socket", exactMode: PRIVATE_FILE_MODE });
-    await unlink(socketPath);
-  } catch (error) {
-    if (error.code !== "ENOENT")
-      throw error;
-  }
-  const encode = (value) => {
+  return {
+    maximumFrameBytes,
+    maximumResponseBytes: options.maximumResponseBytes ?? maximumFrameBytes,
+    maximumConnections: boundedCount(options.maximumConnections, DEFAULT_MAXIMUM_CONNECTIONS, 1024),
+    maximumRequests: boundedCount(options.maximumRequestsPerConnection, 1, 1024),
+    headerTimeoutMs: boundedTimeoutMs(options.headerTimeoutMs, DEFAULT_HEADER_TIMEOUT_MS),
+    idleTimeoutMs: boundedTimeoutMs(options.idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS)
+  };
+};
+function attachControlSocket(server, options) {
+  const bounds = resolveBounds(options);
+  const failure = options.failureResponse;
+  const encode = (value, reason) => {
     const bytes = Buffer.from(`${JSON.stringify(value)}
 `);
-    if (bytes.length <= maximumResponseBytes)
+    if (bytes.length <= bounds.maximumResponseBytes)
       return bytes;
-    return Buffer.from(`${JSON.stringify(options.failureResponse)}
+    const fallback = Buffer.from(`${JSON.stringify(failure(reason))}
 `);
+    if (fallback.length <= bounds.maximumResponseBytes)
+      return fallback;
+    return Buffer.alloc(0);
   };
   const clients = new Set;
   const work = new Set;
   let closing = false;
-  const server = createServer((socket) => {
-    if (closing || clients.size >= maximumConnections) {
-      socket.end(encode(options.failureResponse));
+  server.on("connection", (socket) => {
+    if (closing || clients.size >= bounds.maximumConnections) {
+      const bytes = encode(failure("capacity"), "capacity");
+      if (bytes.length === 0)
+        socket.destroy();
+      else
+        socket.end(bytes);
       return;
     }
     clients.add(socket);
@@ -129,14 +130,14 @@ async function listenControlSocket(options) {
     let received = Buffer.alloc(0);
     let requests = 0;
     let chain = Promise.resolve();
-    const headerTimer = setTimeout(() => socket.destroy(), headerTimeoutMs);
+    const headerTimer = setTimeout(() => socket.destroy(), bounds.headerTimeoutMs);
     headerTimer.unref();
     const armIdle = () => {
       if (idleTimer !== undefined)
         clearTimeout(idleTimer);
-      if (requests >= maximumRequests)
+      if (requests >= bounds.maximumRequests)
         return;
-      idleTimer = setTimeout(() => socket.destroy(), idleTimeoutMs);
+      idleTimer = setTimeout(() => socket.destroy(), bounds.idleTimeoutMs);
       idleTimer.unref();
     };
     socket.on("data", (chunk) => {
@@ -148,12 +149,16 @@ async function listenControlSocket(options) {
       while (true) {
         const newline = received.indexOf(10);
         if (newline < 0) {
-          if (received.byteLength > maximumFrameBytes)
+          if (received.byteLength > bounds.maximumFrameBytes)
             socket.destroy();
           return;
         }
-        if (newline === 0 || newline + 1 > maximumFrameBytes || requests >= maximumRequests) {
-          socket.end(encode(options.failureResponse));
+        if (newline === 0 || newline + 1 > bounds.maximumFrameBytes || requests >= bounds.maximumRequests) {
+          const bytes = encode(failure("limit"), "limit");
+          if (bytes.length === 0)
+            socket.destroy();
+          else
+            socket.end(bytes);
           return;
         }
         const frame = received.subarray(0, newline);
@@ -170,15 +175,15 @@ async function listenControlSocket(options) {
             const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(frame));
             response = await options.onRequest(value, { signal: controller.signal });
           } catch {
-            response = options.failureResponse;
+            response = failure("invalid-request");
           }
           if (!socket.destroyed && !socket.writableEnded) {
-            const bytes = encode(response);
-            if (socket.writableLength + bytes.length > maximumResponseBytes) {
+            const bytes = encode(response, "response-limit");
+            if (bytes.length === 0 || socket.writableLength + bytes.length > bounds.maximumResponseBytes) {
               socket.destroy();
             } else {
               socket.write(bytes, () => {
-                if (requests >= maximumRequests)
+                if (requests >= bounds.maximumRequests)
                   socket.end();
                 else
                   armIdle();
@@ -195,6 +200,36 @@ async function listenControlSocket(options) {
         socket.destroy();
     });
   });
+  let closePromise;
+  return {
+    close() {
+      closePromise ??= (async () => {
+        closing = true;
+        for (const client of clients)
+          client.destroy();
+        await new Promise((resolve2, reject) => server.close((error) => error ? reject(error) : resolve2()));
+        await Promise.allSettled([...work]);
+      })();
+      return closePromise;
+    }
+  };
+}
+async function listenControlSocket(options) {
+  const socketPath = options.socketPath;
+  if (Buffer.byteLength(socketPath) > MAXIMUM_SOCKET_PATH_BYTES) {
+    throw new Error("Control socket path exceeds its platform limit.");
+  }
+  await ensurePrivateDirectory(dirname2(socketPath));
+  try {
+    await socketIdentity(socketPath);
+    await unlink(socketPath);
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+  }
+  const server = createServer();
+  const transport = attachControlSocket(server, options);
+  let published;
   try {
     await new Promise((resolve2, reject) => {
       server.once("error", reject);
@@ -204,40 +239,33 @@ async function listenControlSocket(options) {
       });
     });
     await chmod(socketPath, PRIVATE_FILE_MODE);
-    await socketIdentity(socketPath);
+    published = await socketIdentity(socketPath);
   } catch (error) {
-    for (const client of clients)
-      client.destroy();
-    await new Promise((resolve2) => server.close(() => resolve2()));
+    await transport.close().catch(() => {
+      return;
+    });
     throw error;
   }
-  let closePromise;
   return {
     socketPath,
-    close() {
-      closePromise ??= (async () => {
-        closing = true;
-        for (const client of clients)
-          client.destroy();
-        const failures = [];
-        try {
-          await new Promise((resolve2, reject) => server.close((error) => error ? reject(error) : resolve2()));
-        } catch (error) {
-          failures.push(error);
+    async close() {
+      const failures = [];
+      try {
+        await transport.close();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        const current = await socketIdentity(socketPath).catch(() => null);
+        if (current !== null && sameIdentity(current, published)) {
+          await unlink(socketPath);
         }
-        await Promise.allSettled([...work]);
-        try {
-          const identity = await socketIdentity(socketPath).catch(() => null);
-          if (identity !== null)
-            await unlink(socketPath);
-        } catch (error) {
-          failures.push(error);
-        }
-        if (failures.length > 0) {
-          throw failures.length === 1 ? failures[0] : new AggregateError(failures, "Control socket cleanup requires attention.");
-        }
-      })();
-      return closePromise;
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length > 0) {
+        throw failures.length === 1 ? failures[0] : new AggregateError(failures, "Control socket cleanup requires attention.");
+      }
     }
   };
 }
@@ -255,7 +283,7 @@ async function requestControlSocket(options) {
   if (frame.length > maximumRequestBytes) {
     throw new Error("Control request exceeds its frame limit.");
   }
-  await ensurePrivateDirectory(dirname2(socketPath));
+  await assertOwnedPath(dirname2(socketPath), { kind: "directory", canonical: true });
   const before = await socketIdentity(socketPath);
   return new Promise((resolvePromise, rejectPromise) => {
     const socket = connect(socketPath);
@@ -311,5 +339,6 @@ async function requestControlSocket(options) {
 export {
   requestControlSocket,
   listenControlSocket,
+  attachControlSocket,
   MAXIMUM_SOCKET_PATH_BYTES
 };

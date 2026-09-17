@@ -4,7 +4,7 @@ import { chmod, lstat, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { publishPrivateFile } from "./atomic-publish.ts";
+import { createPrivateFileOnce, publishPrivateFile } from "./atomic-publish.ts";
 import { ensurePrivateDirectory } from "./private-paths.ts";
 
 const roots: string[] = [];
@@ -51,5 +51,30 @@ describe("publishPrivateFile", () => {
     const dir = await root();
     await assert.rejects(publishPrivateFile(join(dir, "missing", "deep"), "name", "x"));
     assert.deepEqual((await readdir(dir)).filter(n => n.endsWith(".tmp")), []);
+  });
+
+  test("a rejected commit guard aborts without touching the target", async () => {
+    const dir = await root();
+    await assert.rejects(
+      publishPrivateFile(dir, "guarded", "new", {
+        beforeCommit: () => { throw new Error("conflict"); },
+      }),
+      /conflict/,
+    );
+    assert.deepEqual((await readdir(dir)).filter(n => !n.startsWith(".")), []);
+    assert.deepEqual((await readdir(dir)).filter(n => n.endsWith(".tmp")), []);
+  });
+});
+
+describe("createPrivateFileOnce", () => {
+  test("creates exactly once and preserves the first content", async () => {
+    const dir = await root();
+    assert.equal(await createPrivateFileOnce(dir, "seed", "first"), "created");
+    assert.equal(await createPrivateFileOnce(dir, "seed", "second"), "existing");
+    assert.equal(await readFile(join(dir, "seed"), "utf8"), "first");
+    assert.deepEqual((await readdir(dir)).filter(n => n.endsWith(".tmp")), []);
+    const metadata = await lstat(join(dir, "seed"));
+    assert.equal(metadata.mode & 0o777, 0o600);
+    assert.equal(metadata.nlink, 1);
   });
 });

@@ -32,6 +32,10 @@ The portable contract every implementation proves. Vectors live in
 4. When `exactMode` is given, `mode & 0o777` must equal it.
 5. Files and sockets default to exactly one hard link.
 6. Optional size bounds are inclusive and compared in bytes.
+7. When `canonical` is set, `realpath(path)` must equal `path` exactly — no
+   component may resolve through a link.
+8. Validation returns the object's `dev`/`ino` identity so callers can detect
+   replacement across a time-of-check/time-of-use gap.
 
 ### Atomic publication
 
@@ -39,9 +43,13 @@ The portable contract every implementation proves. Vectors live in
    within 128 UTF-8 bytes.
 2. Write to a unique same-directory temporary created `O_CREAT | O_EXCL |
    O_WRONLY | O_NOFOLLOW` with mode `0600`.
-3. `fsync` the file, close it, `rename` over the target.
+3. `fsync` the file, close it, run the caller's optional commit guard —
+   a throwing guard aborts the publish — `rename` over the target, `fsync`
+   the directory.
 4. Re-validate the published name as an owned file: mode `0600`, one link.
 5. On any failure, best-effort unlink the temporary; never leave it behind.
+6. Create-once publication links the staged file to the target instead of
+   renaming: an existing name is preserved and reported, never replaced.
 
 ### Control socket
 
@@ -55,16 +63,24 @@ The portable contract every implementation proves. Vectors live in
    newline-terminated frames (default 1). Each frame is fatal-decoded UTF-8,
    `JSON.parse`d to an unknown value, and handed to the product handler.
    Products serialize a bounded response followed by `\n`.
-5. Oversize, empty, or surplus frames close the connection after a fixed
-   product failure response. Handler exceptions produce the same failure
-   response; transport errors never expose internals.
+5. Failure envelopes are reason-coded — `capacity`, `limit`,
+   `invalid-request`, or `response-limit` — and the product maps each reason
+   to its wire body (one fixed value is allowed). Transport errors never
+   expose internals.
 6. Connection count, header deadline, and idle deadline are all bounded.
-7. Closing the listener unlinks the socket only if it still validates as an
-   owned socket — never remove a successor's endpoint.
+7. The transport layer attaches to a caller-created server so products that
+   stage the bind (custody records, staged rename) keep their own lifecycle;
+   transport close performs teardown only and never unlinks.
+8. Closing the listener unlinks the socket only while it is still the exact
+   `dev`/`ino` this listener published. Some runtimes also unlink the bound
+   pathname unconditionally on close; implementations that can must apply
+   the identity guard, and products that need successor detection must keep
+   their own custody record.
 
 ### Control client
 
-1. The socket's directory must validate as private before connecting.
+1. The socket's directory must validate as a canonical private directory
+   before connecting; a client never creates it.
 2. Record the socket's `dev`/`ino` before `connect` and re-`lstat` after
    `connect`; a changed identity means a replaced endpoint — abort.
 3. One request frame per connection, bounded on write; the response is one
