@@ -1,0 +1,20 @@
+[package]
+name = "local-custody"
+version = "0.5.1"
+edition = "2021"
+license = "MIT"
+description = "Rust port of the local-custody filesystem-custody contract."
+repository = "https://github.com/hraness/local-custody"
+rust-version = "1.85"
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "local-custody"
+path = "src/main.rs"

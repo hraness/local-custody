@@ -74,7 +74,9 @@
     "test:package": "bun run ./scripts/package-smoke.ts",
     "check:determinism": "bun run ./scripts/check-determinism.ts",
     "check:portfolio-inventory": "bun run ./scripts/check-portfolio-inventory.ts",
-    "check": "bun run check:portfolio-inventory && bun run lint && bun run typecheck && bun run test && bun run build && bun run check:determinism && bun run test:package",
+    "rust:check": "cd rust && cargo check --locked && cargo clippy -- -D warnings && cargo test --locked",
+    "rust:build": "cd rust && cargo build --release",
+    "check": "bun run check:portfolio-inventory && bun run lint && bun run typecheck && bun run test && bun run rust:check && bun run build && bun run check:determinism && bun run test:package",
     "prepack": "bun run check"
   },
   "devDependencies": {
