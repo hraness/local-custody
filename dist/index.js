@@ -228,7 +228,7 @@ function attachControlSocket(server, options) {
       while (true) {
         const newline = received.indexOf(10);
         if (newline < 0) {
-          if (received.byteLength > bounds.maximumFrameBytes)
+          if (received.byteLength >= bounds.maximumFrameBytes)
             socket.destroy();
           return;
         }
