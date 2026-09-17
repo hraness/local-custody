@@ -1,4 +1,12 @@
-import { constants } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+} from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -27,11 +35,30 @@ export interface OwnedPathIdentity {
   readonly ino: number;
 }
 
+/** Contents plus identity of a file that passed a stable bounded read. */
+export interface OwnedFileRead {
+  readonly bytes: Buffer;
+  readonly dev: number;
+  readonly ino: number;
+}
+
+/** Optional overrides for the file expectations checked during a stable read. */
+export interface StableFileExpectation {
+  /** Exact permission bits. Overrides `ownerOnly` when set. */
+  readonly exactMode?: number;
+  /** When unset, group/other bits must be zero: `mode & 0o077 === 0`. */
+  readonly ownerOnly?: boolean;
+  /** Exact hard-link count. Defaults to 1. */
+  readonly links?: number;
+  /** Minimum accepted file size. */
+  readonly minimumBytes?: bigint;
+}
+
 const ownerUid = (): number | undefined =>
   typeof process.getuid === "function" ? process.getuid() : undefined;
 
 const kindMatches = (
-  metadata: Awaited<ReturnType<typeof lstat>>,
+  metadata: { isFile(): boolean; isDirectory(): boolean; isSocket(): boolean },
   kind: OwnedPathKind,
 ): boolean =>
   kind === "file" ? metadata.isFile()
@@ -60,6 +87,31 @@ export async function assertOwnedPath(
       && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode))
     || (expectation.ownerOnly === true && (metadata.mode & 0o077n) !== 0n)
     || (expectation.canonical === true && (await realpath(path)) !== path)
+    || (expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes)
+    || (expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes)
+  ) {
+    throw new Error(`Unsafe local ${expectation.kind}.`);
+  }
+  return { dev: Number(metadata.dev), ino: Number(metadata.ino) };
+}
+
+/** Synchronous form of {@link assertOwnedPath} with identical checks. */
+export function assertOwnedPathSync(
+  path: string,
+  expectation: OwnedPathExpectation,
+): OwnedPathIdentity {
+  const metadata = lstatSync(path, { bigint: true });
+  const uid = ownerUid();
+  const expectedLinks = expectation.links ?? (expectation.kind === "directory" ? undefined : 1n);
+  if (
+    !kindMatches(metadata, expectation.kind)
+    || metadata.isSymbolicLink()
+    || (expectedLinks !== undefined && metadata.nlink !== BigInt(expectedLinks))
+    || (uid !== undefined && metadata.uid !== BigInt(uid))
+    || (expectation.exactMode !== undefined
+      && (metadata.mode & 0o777n) !== BigInt(expectation.exactMode))
+    || (expectation.ownerOnly === true && (metadata.mode & 0o077n) !== 0n)
+    || (expectation.canonical === true && realpathSync(path) !== path)
     || (expectation.minimumBytes !== undefined && metadata.size < expectation.minimumBytes)
     || (expectation.maximumBytes !== undefined && metadata.size > expectation.maximumBytes)
   ) {
@@ -98,50 +150,134 @@ export async function ensurePrivateDirectory(path: string): Promise<string> {
   return absolute;
 }
 
+type StableStat = {
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+  dev: bigint;
+  ino: bigint;
+  nlink: bigint;
+  mode: bigint;
+  uid: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+};
+
+const checkStableCandidate = (
+  before: StableStat,
+  maximumBytes: number,
+  expectation: StableFileExpectation,
+): void => {
+  const uid = ownerUid();
+  const links = BigInt(expectation.links ?? 1);
+  if (
+    !before.isFile()
+    || before.nlink !== links
+    || (uid !== undefined && before.uid !== BigInt(uid))
+    || (expectation.exactMode !== undefined
+      ? (before.mode & 0o777n) !== BigInt(expectation.exactMode)
+      : expectation.ownerOnly !== false && (before.mode & 0o077n) !== 0n)
+    || (expectation.minimumBytes !== undefined && before.size < expectation.minimumBytes)
+    || before.size > BigInt(maximumBytes)
+  ) {
+    throw new Error("Unsafe private file.");
+  }
+};
+
+const checkStableResult = (before: StableStat, after: StableStat): void => {
+  if (
+    after.isSymbolicLink()
+    || !after.isFile()
+    || after.dev !== before.dev
+    || after.ino !== before.ino
+    || after.nlink !== before.nlink
+    || after.mode !== before.mode
+    || after.uid !== before.uid
+    || after.size !== before.size
+    || after.mtimeNs !== before.mtimeNs
+    || after.ctimeNs !== before.ctimeNs
+  ) {
+    throw new Error("Private file changed during the read.");
+  }
+};
+
 /**
  * Read `path` while proving the file did not change during the read:
- * open without following links, validate the descriptor, read within the
- * bound, then re-`lstat` the path and require the same object — device,
- * inode, link count, mode, owner, size, mtime, and ctime all identical.
+ * open without following links, validate the descriptor, read exactly the
+ * observed size, then re-`lstat` the path and require the same object —
+ * device, inode, link count, mode, owner, size, mtime, and ctime all
+ * identical at nanosecond precision. Returns the bytes with the read
+ * object's device/inode identity.
  */
-export async function readOwnedFileStable(path: string, maximumBytes: number): Promise<Buffer> {
+export async function readOwnedFileStable(
+  path: string,
+  maximumBytes: number,
+  expectation: StableFileExpectation = {},
+): Promise<OwnedFileRead> {
   const handle = await open(
     path,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   );
   try {
-    const before = await handle.stat();
-    const uid = ownerUid();
-    if (
-      !before.isFile()
-      || before.nlink !== 1
-      || (uid !== undefined && before.uid !== uid)
-      || (before.mode & 0o077) !== 0
-      || before.size > maximumBytes
-    ) {
-      throw new Error("Unsafe private file.");
+    const before = await handle.stat({ bigint: true });
+    checkStableCandidate(before, maximumBytes, expectation);
+    const buffer = Buffer.alloc(Number(before.size));
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        offset,
+        buffer.byteLength - offset,
+        null,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
     }
-    const buffer = Buffer.alloc(maximumBytes + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead > maximumBytes) throw new Error("Private file exceeds its size bound.");
-    const after = await lstat(path);
-    if (
-      after.isSymbolicLink()
-      || !after.isFile()
-      || after.dev !== before.dev
-      || after.ino !== before.ino
-      || after.nlink !== 1
-      || after.mode !== before.mode
-      || after.uid !== before.uid
-      || after.size !== before.size
-      || after.mtimeMs !== before.mtimeMs
-      || after.ctimeMs !== before.ctimeMs
-    ) {
+    const after = await lstat(path, { bigint: true });
+    checkStableResult(before, after);
+    if (offset !== buffer.byteLength) {
       throw new Error("Private file changed during the read.");
     }
-    return buffer.subarray(0, bytesRead);
+    return { bytes: buffer, dev: Number(before.dev), ino: Number(before.ino) };
   } finally {
     await handle.close();
+  }
+}
+
+/** Synchronous form of {@link readOwnedFileStable} with identical checks. */
+export function readOwnedFileStableSync(
+  path: string,
+  maximumBytes: number,
+  expectation: StableFileExpectation = {},
+): OwnedFileRead {
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    checkStableCandidate(before, maximumBytes, expectation);
+    const buffer = Buffer.alloc(Number(before.size));
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const count = readSync(
+        descriptor,
+        buffer,
+        offset,
+        buffer.byteLength - offset,
+        null,
+      );
+      if (count === 0) break;
+      offset += count;
+    }
+    const after = lstatSync(path, { bigint: true });
+    checkStableResult(before, after);
+    if (offset !== buffer.byteLength) {
+      throw new Error("Private file changed during the read.");
+    }
+    return { bytes: buffer, dev: Number(before.dev), ino: Number(before.ino) };
+  } finally {
+    closeSync(descriptor);
   }
 }
 

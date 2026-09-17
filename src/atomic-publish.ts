@@ -1,9 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fsyncSync,
+  linkSync,
+  openSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { link, open, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
-import { PRIVATE_FILE_MODE, assertOwnedPath } from "./private-paths.js";
+import {
+  PRIVATE_FILE_MODE,
+  assertOwnedPath,
+  assertOwnedPathSync,
+} from "./private-paths.js";
 
 const safeFileName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,126}$/u;
 
@@ -114,5 +126,70 @@ export async function createPrivateFileOnce(
   } finally {
     await unlink(temporary).catch(() => undefined);
     await syncDirectory(directory).catch(() => undefined);
+  }
+}
+
+const writeStagedSync = (staged: string, content: string | Buffer): void => {
+  const descriptor = openSync(
+    staged,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+    PRIVATE_FILE_MODE,
+  );
+  try {
+    const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      offset += writeSync(descriptor, bytes, offset, bytes.byteLength - offset);
+    }
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+const syncDirectorySync = (directory: string): void => {
+  const descriptor = openSync(directory, constants.O_RDONLY);
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+/** Synchronous form of {@link createPrivateFileOnce} with identical steps. */
+export function createPrivateFileOnceSync(
+  directory: string,
+  name: string,
+  content: string | Buffer,
+): "created" | "existing" {
+  assertSafeName(name);
+  const target = join(directory, name);
+  const temporary = join(directory, `.${name}.${randomUUID()}.tmp`);
+  try {
+    writeStagedSync(temporary, content);
+    try {
+      linkSync(temporary, target);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return "existing";
+      throw error;
+    }
+    syncDirectorySync(directory);
+    assertOwnedPathSync(target, {
+      kind: "file",
+      exactMode: PRIVATE_FILE_MODE,
+      links: 2,
+    });
+    return "created";
+  } finally {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The staging name is best-effort cleanup only.
+    }
+    try {
+      syncDirectorySync(directory);
+    } catch {
+      // Directory durability after cleanup is best-effort.
+    }
   }
 }

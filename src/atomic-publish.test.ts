@@ -4,7 +4,11 @@ import { chmod, lstat, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createPrivateFileOnce, publishPrivateFile } from "./atomic-publish.ts";
+import {
+  createPrivateFileOnce,
+  createPrivateFileOnceSync,
+  publishPrivateFile,
+} from "./atomic-publish.ts";
 import { ensurePrivateDirectory } from "./private-paths.ts";
 
 const roots: string[] = [];
@@ -71,6 +75,17 @@ describe("createPrivateFileOnce", () => {
     const dir = await root();
     assert.equal(await createPrivateFileOnce(dir, "seed", "first"), "created");
     assert.equal(await createPrivateFileOnce(dir, "seed", "second"), "existing");
+    assert.equal(await readFile(join(dir, "seed"), "utf8"), "first");
+    assert.deepEqual((await readdir(dir)).filter(n => n.endsWith(".tmp")), []);
+    const metadata = await lstat(join(dir, "seed"));
+    assert.equal(metadata.mode & 0o777, 0o600);
+    assert.equal(metadata.nlink, 1);
+  });
+
+  test("createPrivateFileOnceSync applies identical steps", async () => {
+    const dir = await root();
+    assert.equal(createPrivateFileOnceSync(dir, "seed", "first"), "created");
+    assert.equal(createPrivateFileOnceSync(dir, "seed", "second"), "existing");
     assert.equal(await readFile(join(dir, "seed"), "utf8"), "first");
     assert.deepEqual((await readdir(dir)).filter(n => n.endsWith(".tmp")), []);
     const metadata = await lstat(join(dir, "seed"));
