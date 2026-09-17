@@ -46,4 +46,5 @@ typecheck, tests, deterministic build, and a packed-consumer smoke that runs a
 live control-socket round trip under Node.
 
 Releases are immutable `v*` tags; the release workflow re-runs the full gate
-and publishes a checks-gated GitHub Release.
+and publishes a checks-gated GitHub Release, then mirrors the same version to
+npm through the tag-only `npm-release` environment and OIDC trusted publishing.

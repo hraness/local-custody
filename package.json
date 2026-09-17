@@ -1,6 +1,6 @@
 {
   "name": "@hraness/local-custody",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Owner-only local custody primitives for Hraness product CLIs.",
   "license": "MIT",
   "type": "module",
@@ -11,6 +11,10 @@
     "url": "git+https://github.com/hraness/local-custody.git"
   },
   "homepage": "https://github.com/hraness/local-custody#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "bugs": {
     "url": "https://github.com/hraness/local-custody/issues"
   },
