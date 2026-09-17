@@ -99,6 +99,53 @@ export async function ensurePrivateDirectory(path: string): Promise<string> {
 }
 
 /**
+ * Read `path` while proving the file did not change during the read:
+ * open without following links, validate the descriptor, read within the
+ * bound, then re-`lstat` the path and require the same object — device,
+ * inode, link count, mode, owner, size, mtime, and ctime all identical.
+ */
+export async function readOwnedFileStable(path: string, maximumBytes: number): Promise<Buffer> {
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const before = await handle.stat();
+    const uid = ownerUid();
+    if (
+      !before.isFile()
+      || before.nlink !== 1
+      || (uid !== undefined && before.uid !== uid)
+      || (before.mode & 0o077) !== 0
+      || before.size > maximumBytes
+    ) {
+      throw new Error("Unsafe private file.");
+    }
+    const buffer = Buffer.alloc(maximumBytes + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > maximumBytes) throw new Error("Private file exceeds its size bound.");
+    const after = await lstat(path);
+    if (
+      after.isSymbolicLink()
+      || !after.isFile()
+      || after.dev !== before.dev
+      || after.ino !== before.ino
+      || after.nlink !== 1
+      || after.mode !== before.mode
+      || after.uid !== before.uid
+      || after.size !== before.size
+      || after.mtimeMs !== before.mtimeMs
+      || after.ctimeMs !== before.ctimeMs
+    ) {
+      throw new Error("Private file changed during the read.");
+    }
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
  * Open `path` without following links, prove it is an owned, private,
  * link-count-1 regular file within `maximumBytes`, and return its contents.
  */

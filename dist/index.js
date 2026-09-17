@@ -33,6 +33,27 @@ async function ensurePrivateDirectory(path) {
   }
   return absolute;
 }
+async function readOwnedFileStable(path, maximumBytes) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = await handle.stat();
+    const uid = ownerUid();
+    if (!before.isFile() || before.nlink !== 1 || uid !== undefined && before.uid !== uid || (before.mode & 63) !== 0 || before.size > maximumBytes) {
+      throw new Error("Unsafe private file.");
+    }
+    const buffer = Buffer.alloc(maximumBytes + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > maximumBytes)
+      throw new Error("Private file exceeds its size bound.");
+    const after = await lstat(path);
+    if (after.isSymbolicLink() || !after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.nlink !== 1 || after.mode !== before.mode || after.uid !== before.uid || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) {
+      throw new Error("Private file changed during the read.");
+    }
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
 async function readPrivateFile(path, maximumBytes) {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
@@ -460,6 +481,7 @@ export {
   readProtectedStdin,
   readProtectedDescriptor,
   readPrivateFile,
+  readOwnedFileStable,
   publishPrivateFile,
   listenControlSocket,
   ensurePrivateDirectory,
