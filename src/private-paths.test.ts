@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   assertOwnedPath,
   ensurePrivateDirectory,
+  readOwnedFileStable,
   readPrivateFile,
 } from "./private-paths.ts";
 
@@ -129,6 +130,16 @@ describe("readPrivateFile", () => {
     const link = join(base, "link");
     await symlink(file, link);
     await assert.rejects(readPrivateFile(link, 64));
+  });
+});
+
+describe("readOwnedFileStable", () => {
+  test("returns bounded content of an owned private file", async () => {
+    const base = await root();
+    const file = join(base, "stable");
+    await writeFile(file, "payload", { mode: 0o600 });
+    assert.equal((await readOwnedFileStable(file, 64)).toString("utf8"), "payload");
+    await assert.rejects(readOwnedFileStable(file, 4), /Unsafe private file/);
   });
 });
 
