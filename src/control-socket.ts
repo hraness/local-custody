@@ -160,7 +160,8 @@ export function attachControlSocket(
       while (true) {
         const newline = received.indexOf(0x0a);
         if (newline < 0) {
-          if (received.byteLength > bounds.maximumFrameBytes) socket.destroy();
+          // A buffer at the bound with no newline can never complete a frame.
+          if (received.byteLength >= bounds.maximumFrameBytes) socket.destroy();
           return;
         }
         if (newline === 0 || newline + 1 > bounds.maximumFrameBytes || requests >= bounds.maximumRequests) {
