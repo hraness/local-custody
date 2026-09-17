@@ -354,6 +354,28 @@ pub fn stable_read<P: AsRef<Path>>(
     let before = file.metadata().map_err(|e| {
         CustodyError::new("stat", format!("cannot fstat {}: {e}", path.display()))
     })?;
+
+    // Verify the path still resolves to the same object we opened. This catches
+    // a replacement that happened immediately after open, before we read.
+    let path_before = fs::symlink_metadata(path).map_err(|e| {
+        CustodyError::new("stat", format!("cannot lstat {} after open: {e}", path.display()))
+    })?;
+    if path_before.file_type().is_symlink()
+        || before.dev() != path_before.dev()
+        || before.ino() != path_before.ino()
+        || before.size() != path_before.size()
+        || before.mode() != path_before.mode()
+        || before.uid() != path_before.uid()
+        || before.nlink() != path_before.nlink()
+        || before.mtime_nsec() != path_before.mtime_nsec()
+        || before.ctime_nsec() != path_before.ctime_nsec()
+    {
+        return Err(CustodyError::new(
+            "changed",
+            format!("{} changed immediately after it was opened", path.display()),
+        ));
+    }
+
     if !before.is_file() {
         return Err(CustodyError::new("not-file", format!("{} is not a regular file", path.display())));
     }

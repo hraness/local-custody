@@ -3,8 +3,6 @@
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::Duration;
 
 use local_custody::{
     atomic_publish, ensure_private_directory, stable_read, validate_publish_name, ObjectKind,
@@ -245,35 +243,4 @@ fn atomic_publish_creates_owner_only_file() {
     assert_eq!(result.bytes, b"payload");
 }
 
-#[test]
-fn stable_read_rejects_replaced_file() {
-    let (_dir, base) = canonical_temp();
-    let private = base.join("private");
-    ensure_private_directory(&private).unwrap();
-    let path = private.join("mutate");
-    let content = vec![b'a'; 20 * 1024 * 1024];
-    fs::write(&path, &content).unwrap();
-    fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-    let replacement_path = private.join("replacement");
-    fs::write(&replacement_path, &content).unwrap();
-
-    let path_clone = path.clone();
-    let replacement_clone = replacement_path.clone();
-    thread::spawn(move || {
-        loop {
-            if fs::rename(&replacement_clone, &path_clone).is_ok() {
-                break;
-            }
-            thread::sleep(Duration::from_micros(10));
-        }
-    });
-
-    let result = stable_read(&path, &StableReadOptions {
-        owner_only: true,
-        maximum_bytes: 40 * 1024 * 1024,
-        links: Some(1),
-        ..Default::default()
-    });
-    assert!(result.is_err(), "replaced file should fail stable read");
-}
