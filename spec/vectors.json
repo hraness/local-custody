@@ -142,6 +142,78 @@
       "outcome": "connection destroyed, no response"
     }
   ],
+  "sidecarEnvelope": [
+    {
+      "name": "unknown op rejected",
+      "request": { "op": "no-such-op" },
+      "expect": { "ok": false, "code": "invalid-request" }
+    },
+    {
+      "name": "non-string op rejected",
+      "request": { "op": 123 },
+      "expect": { "ok": false, "code": "invalid-request" }
+    },
+    {
+      "name": "ensure private directory",
+      "request": { "op": "ensure_private_directory", "path": "$TEMP/private" },
+      "expect": { "ok": true, "fields": { "path": "$TEMP/private" } }
+    },
+    {
+      "name": "atomic publish writes",
+      "request": { "op": "atomic_publish", "dir": "$TEMP/private", "name": "state.json", "contentBase64": "eA==" },
+      "expect": { "ok": true, "fields": { "created": true, "path": "$TEMP/private/state.json" } }
+    },
+    {
+      "name": "atomic publish create-once preserves",
+      "request": { "op": "atomic_publish", "dir": "$TEMP/private", "name": "state.json", "contentBase64": "eQ==", "createOnce": true },
+      "expect": { "ok": true, "fields": { "created": false, "path": "$TEMP/private/state.json" } }
+    },
+    {
+      "name": "assert owned path on published file",
+      "request": { "op": "assert_owned_path", "path": "$TEMP/private/state.json", "kind": "file", "exactMode": "0600" },
+      "expect": { "ok": true, "fields": { "size": 1 } }
+    },
+    {
+      "name": "stable read returns content",
+      "request": { "op": "stable_read", "path": "$TEMP/private/state.json", "maximumBytes": 64 },
+      "expect": { "ok": true, "fields": { "size": 1, "contentBase64": "eA==" } }
+    },
+    {
+      "name": "stable read exact mode mismatch",
+      "request": { "op": "stable_read", "path": "$TEMP/private/state.json", "maximumBytes": 64, "exactMode": "0400" },
+      "expect": { "ok": false, "code": "mode-mismatch" }
+    },
+    {
+      "name": "assert owned path missing",
+      "request": { "op": "assert_owned_path", "path": "$TEMP/private/missing", "kind": "file" },
+      "expect": { "ok": false, "code": "stat" }
+    },
+    {
+      "name": "unsafe publish name rejected",
+      "request": { "op": "atomic_publish", "dir": "$TEMP/private", "name": "../escape", "contentBase64": "eA==" },
+      "expect": { "ok": false, "code": "separator" }
+    },
+    {
+      "name": "invalid base64 rejected",
+      "request": { "op": "atomic_publish", "dir": "$TEMP/private", "name": "bad.txt", "contentBase64": "!!!" },
+      "expect": { "ok": false, "code": "invalid-request" }
+    },
+    {
+      "name": "negative descriptor rejected",
+      "request": { "op": "read_protected_descriptor", "fd": -1 },
+      "expect": { "ok": false, "code": "invalid" }
+    },
+    {
+      "name": "non-regular descriptor rejected",
+      "request": { "op": "read_protected_descriptor", "fd": 0, "maximumBytes": 64 },
+      "expect": { "ok": false, "code": "kind" }
+    },
+    {
+      "name": "control request to missing socket",
+      "request": { "op": "control_socket_request", "socketPath": "$TEMP/private/no.sock", "request": {}, "maximumResponseBytes": 1024, "timeoutMs": 500 },
+      "expect": { "ok": false, "code": "not-found" }
+    }
+  ],
   "protectedInput": [
     {
       "name": "private regular file",

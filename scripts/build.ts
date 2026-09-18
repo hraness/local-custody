@@ -6,6 +6,9 @@ const entrypoints = [
   "src/control-socket.ts",
   "src/private-paths.ts",
   "src/protected-input.ts",
+  "src/custody-rust.ts",
+  "src/rust-fallback.ts",
+  "src/artifact-manifest.ts",
 ];
 
 await rm("dist", { force: true, recursive: true });

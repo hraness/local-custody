@@ -13,14 +13,64 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  rust_artifacts:
+    name: Build native sidecar (${{ matrix.platform }}-${{ matrix.arch }})
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x64
+            triple: x86_64-unknown-linux-gnu
+          - os: macos-14
+            platform: darwin
+            arch: arm64
+            triple: aarch64-apple-darwin
+          - os: macos-14
+            platform: darwin
+            arch: x64
+            triple: x86_64-apple-darwin
+    steps:
+      - name: Check out exact tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.ref }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+          targets: ${{ matrix.triple }}
+      - name: Build local-custody sidecar
+        env:
+          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=. --remap-path-prefix=${HOME}/.cargo/registry/src/=/cargo-registry-src/ --remap-path-prefix=${HOME}/.rustup/toolchains/=/rust-toolchains/ -C strip=symbols"
+        run: |
+          set -euo pipefail
+          cd rust
+          cargo build --release --target ${{ matrix.triple }} -p local-custody
+      - name: Upload sidecar artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-custody-${{ matrix.platform }}-${{ matrix.arch }}
+          path: rust/target/${{ matrix.triple }}/release/local-custody
+          if-no-files-found: error
+          retention-days: 7
+
   verify:
     name: Verify
+    needs: rust_artifacts
     permissions:
       contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
       verified_tag: ${{ steps.identity.outputs.tag }}
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -63,8 +113,50 @@ jobs:
             printf '%s\n' "$generated_status"
             exit 1
           fi
+      - name: Download native sidecar artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: local-custody-*
+          path: dist/rust-artifacts/sidecar-temp/
+          merge-multiple: false
+      - name: Stage native sidecar artifacts in the npm tree
+        run: |
+          set -euo pipefail
+          for pair in linux-x64 darwin-arm64 darwin-x64; do
+            src="dist/rust-artifacts/sidecar-temp/local-custody-${pair}/local-custody"
+            dest="dist/rust-artifacts/local-custody/${pair}/local-custody"
+            if [[ ! -f "$src" ]]; then
+              echo "::error::Missing native sidecar artifact for ${pair}"
+              exit 1
+            fi
+            mkdir -p "dist/rust-artifacts/local-custody/${pair}"
+            cp "$src" "$dest"
+            chmod +x "$dest"
+          done
+          rm -rf dist/rust-artifacts/sidecar-temp/
+      - name: Regenerate the rust artifact manifest for every staged target
+        run: bun run rust:build:manifest
       - run: bun pm pack --dry-run --ignore-scripts
       - run: node --input-type=module -e 'await Promise.all(["./dist/index.js"].map((path) => import(path)))'
+      - name: Create one exact npm tarball and checksum
+        run: |
+          set -euo pipefail
+          mkdir artifacts
+          npm pack --ignore-scripts --pack-destination artifacts .
+          artifacts=(artifacts/*.tgz)
+          if [[ ${#artifacts[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one npm release tarball"
+            exit 1
+          fi
+          (cd artifacts && sha256sum "$(basename "${artifacts[0]}")" > SHA256SUMS)
+      - name: Preserve exact release bytes
+        id: artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-release
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
 
   publish:
     name: Publish
@@ -78,11 +170,24 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       VERIFIED_TAG: ${{ needs.verify.outputs.verified_tag }}
     steps:
+      - name: Download exact release bytes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact_id }}
+          path: artifacts
+          merge-multiple: true
+      - name: Recheck exact checksum
+        run: (cd artifacts && sha256sum --check SHA256SUMS)
       - name: Publish verified GitHub Release
         run: |
           set -euo pipefail
           if [[ -z "$VERIFIED_TAG" || "$VERIFIED_TAG" != "$GITHUB_REF_NAME" ]]; then
             echo "::error::Publish request does not match the verified tag"
+            exit 1
+          fi
+          artifacts=(artifacts/*.tgz)
+          if [[ ${#artifacts[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one npm release tarball"
             exit 1
           fi
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
@@ -118,12 +223,13 @@ jobs:
               --verify-tag \
               --generate-notes \
               --latest \
-              --title "Local Custody $GITHUB_REF_NAME"
+              --title "Local Custody $GITHUB_REF_NAME" \
+              "${artifacts[0]}" artifacts/SHA256SUMS
           fi
           release_state="$(gh release view "$GITHUB_REF_NAME" \
             --json assets,isDraft,isImmutable,isPrerelease,tagName \
             --jq '[.tagName, .isDraft, .isPrerelease, .isImmutable, (.assets | length)] | @tsv')"
-          expected_state="$GITHUB_REF_NAME"$'\tfalse\tfalse\ttrue\t0'
+          expected_state="$GITHUB_REF_NAME"$'\tfalse\tfalse\ttrue\t2'
           if [[ "$release_state" != "$expected_state" ]]; then
             echo "::error::Release $GITHUB_REF_NAME is not published and immutable"
             exit 1
@@ -158,6 +264,29 @@ jobs:
           node-version: "24.20.0"
           package-manager-cache: false
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Download native sidecar artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: local-custody-*
+          path: dist/rust-artifacts/sidecar-temp/
+          merge-multiple: false
+      - name: Stage native sidecar artifacts in the npm tree
+        run: |
+          set -euo pipefail
+          for pair in linux-x64 darwin-arm64 darwin-x64; do
+            src="dist/rust-artifacts/sidecar-temp/local-custody-${pair}/local-custody"
+            dest="dist/rust-artifacts/local-custody/${pair}/local-custody"
+            if [[ ! -f "$src" ]]; then
+              echo "::error::Missing native sidecar artifact for ${pair}"
+              exit 1
+            fi
+            mkdir -p "dist/rust-artifacts/local-custody/${pair}"
+            cp "$src" "$dest"
+            chmod +x "$dest"
+          done
+          rm -rf dist/rust-artifacts/sidecar-temp/
+      - name: Regenerate the rust artifact manifest for every staged target
+        run: bun run rust:build:manifest
       - name: Pack the verified version
         id: pack
         run: |

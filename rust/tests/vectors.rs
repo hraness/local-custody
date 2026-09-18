@@ -235,9 +235,10 @@ fn atomic_publish_creates_owner_only_file() {
     let (_dir, base) = canonical_temp();
     let private = base.join("private");
     ensure_private_directory(&private).unwrap();
-    let path = atomic_publish(&private, "state.v2.json", b"payload", false).unwrap();
-    assert_eq!(path, private.join("state.v2.json"));
-    let result = stable_read(&path, &StableReadOptions {
+    let published = atomic_publish(&private, "state.v2.json", b"payload", false).unwrap();
+    assert!(published.created);
+    assert_eq!(published.path, private.join("state.v2.json"));
+    let result = stable_read(&published.path, &StableReadOptions {
         owner_only: true,
         maximum_bytes: 1024,
         links: Some(1),

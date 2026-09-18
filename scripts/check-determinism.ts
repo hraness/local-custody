@@ -10,6 +10,9 @@ async function inventory(root: string, directory = root): Promise<Record<string,
   const result: Record<string, string> = {};
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
+    // Native sidecar binaries are staged after the deterministic JS build and
+    // are platform-specific; they are not part of the reproducible output.
+    if (entry.isDirectory() && relative(root, path) === "rust-artifacts") continue;
     if (entry.isDirectory()) Object.assign(result, await inventory(root, path));
     else {
       assert.ok(entry.isFile(), "Generated output must contain only regular files.");
