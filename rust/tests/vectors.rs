@@ -2,11 +2,12 @@
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use local_custody::{
-    atomic_publish, ensure_private_directory, stable_read, validate_publish_name, ObjectKind,
-    OwnedPathOptions, StableReadOptions,
+    atomic_publish, ensure_private_directory, read_protected_descriptor, stable_read,
+    validate_publish_name, ObjectKind, OwnedPathOptions, StableReadOptions,
 };
 use serde::Deserialize;
 use tempfile::TempDir;
@@ -21,6 +22,8 @@ struct Vectors {
     stable_read: Vec<Case>,
     #[serde(rename = "publishName")]
     publish_name: Vec<NameCase>,
+    #[serde(rename = "protectedInput")]
+    protected_input: Vec<Case>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,6 +31,7 @@ struct Case {
     name: String,
     arrange: Option<serde_json::Value>,
     expect: Option<serde_json::Value>,
+    #[serde(default)]
     outcome: String,
 }
 
@@ -243,4 +247,37 @@ fn atomic_publish_creates_owner_only_file() {
     assert_eq!(result.bytes, b"payload");
 }
 
+#[test]
+fn protected_input_vectors() {
+    let data: Vectors = serde_json::from_str(include_str!("../../spec/vectors.json")).unwrap();
+    for case in data.protected_input {
+        if let Some(arrange) = &case.arrange {
+            let obj = arrange.as_object().unwrap();
+            let kind = obj["kind"].as_str().unwrap();
+            if kind == "tty" {
+                // Requires a controlling terminal; skip in automated vectors.
+                continue;
+            }
+            let (_dir, base) = canonical_temp();
+            let path = setup_owned_path(&base, arrange);
+            let bound = obj.get("bound").and_then(|v| v.as_u64()).map(|n| n as usize);
+            let file = fs::File::open(&path).unwrap();
+            let result = read_protected_descriptor(file.as_raw_fd(), bound);
+            let expect = case.expect.as_ref().unwrap();
+            if let Some(content) = expect.get("content").and_then(|v| v.as_str()) {
+                assert_eq!(result.unwrap(), content, "{}", case.name);
+            } else if let Some(code) = expect.get("code").and_then(|v| v.as_str()) {
+                assert_eq!(result.unwrap_err().code, code, "{}", case.name);
+            } else {
+                panic!("unexpected expect shape for {}", case.name);
+            }
+        } else {
+            // Negative descriptor case.
+            let expect = case.expect.as_ref().unwrap();
+            let code = expect.get("code").and_then(|v| v.as_str()).unwrap();
+            let result = read_protected_descriptor(-1, Some(64));
+            assert_eq!(result.unwrap_err().code, code, "{}", case.name);
+        }
+    }
+}
 

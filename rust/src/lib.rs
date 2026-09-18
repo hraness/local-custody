@@ -9,6 +9,7 @@ use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 /// An outcome from an owned-path or stable-read check that callers can use to
 /// detect time-of-check/time-of-use replacement.
@@ -552,3 +553,339 @@ impl fmt::Display for ObjectKind {
         fmt::Debug::fmt(self, f)
     }
 }
+
+// -----------------------------------------------------------------------------
+// Protected input
+// -----------------------------------------------------------------------------
+
+const DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES: usize = 65_536;
+
+/// Read a secret from a descriptor that is known to the caller.
+///
+/// - Rejects negative descriptors.
+/// - Rejects TTYs.
+/// - On Unix, the descriptor must refer to a regular file owned by the
+///   current user with no group/other access bits.
+/// - Reads at most `maximum_bytes` and fails if more data is available.
+/// - Returns valid UTF-8 or fails closed.
+pub fn read_protected_descriptor(fd: i32, maximum_bytes: Option<usize>) -> Result<String, CustodyError> {
+    if fd < 0 {
+        return Err(CustodyError::new("invalid", "negative descriptor"));
+    }
+    let maximum_bytes = maximum_bytes.unwrap_or(DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES);
+    if maximum_bytes == 0 {
+        return Err(CustodyError::new("limit", "maximum bytes must be positive"));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::RawFd;
+        let raw: RawFd = fd;
+        let is_tty = unsafe { libc::isatty(raw) != 0 };
+        if is_tty {
+            return Err(CustodyError::new("tty", "descriptor is a terminal"));
+        }
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(raw, &mut stat) } != 0 {
+            return Err(CustodyError::new("stat", format!("cannot fstat descriptor {fd}")));
+        }
+        if (stat.st_mode & libc::S_IFMT) != libc::S_IFREG {
+            return Err(CustodyError::new("kind", "descriptor is not a regular file"));
+        }
+        if let Some(uid) = current_uid() {
+            if stat.st_uid != uid {
+                return Err(CustodyError::new("owner", "descriptor is not owned by current user"));
+            }
+        }
+        if stat.st_mode & 0o077 != 0 {
+            return Err(CustodyError::new("mode", "descriptor allows group/other access"));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Without Unix metadata we can only enforce the TTY and byte bounds.
+    }
+
+    // Read directly through libc so we never take ownership of the caller's
+    // descriptor and therefore never close it.
+    let mut buf = Vec::with_capacity(maximum_bytes);
+    while buf.len() < maximum_bytes {
+        let remaining = maximum_bytes - buf.len();
+        let mut chunk = vec![0u8; remaining.min(4096)];
+        let n = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+        if n < 0 {
+            return Err(CustodyError::new("read", format!("cannot read descriptor {fd}")));
+        }
+        if n == 0 {
+            break;
+        }
+        let n = n as usize;
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    // Detect whether any additional bytes remain beyond the bound.
+    let mut extra = [0u8; 1];
+    let n = unsafe { libc::read(fd, extra.as_mut_ptr().cast(), 1) };
+    if n > 0 {
+        return Err(CustodyError::new("limit", format!("input exceeds {maximum_bytes} bytes")));
+    }
+    String::from_utf8(buf).map_err(|e| {
+        CustodyError::new("utf8", format!("descriptor content is not valid UTF-8: {e}"))
+    })
+}
+
+pub fn read_protected_stdin(maximum_bytes: Option<usize>) -> Result<String, CustodyError> {
+    read_protected_descriptor(0, maximum_bytes)
+}
+
+// -----------------------------------------------------------------------------
+// Control socket
+// -----------------------------------------------------------------------------
+
+pub const MAXIMUM_SOCKET_PATH_BYTES: usize = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlSocketFailureReason {
+    Capacity,
+    Limit,
+    InvalidRequest,
+    ResponseLimit,
+}
+
+impl fmt::Display for ControlSocketFailureReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ControlSocketFailureReason::Capacity => write!(f, "capacity"),
+            ControlSocketFailureReason::Limit => write!(f, "limit"),
+            ControlSocketFailureReason::InvalidRequest => write!(f, "invalid-request"),
+            ControlSocketFailureReason::ResponseLimit => write!(f, "response-limit"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ControlSocketBounds {
+    pub maximum_frame_bytes: usize,
+    pub maximum_response_bytes: usize,
+    pub maximum_requests_per_connection: usize,
+    pub header_timeout_ms: u64,
+    pub idle_timeout_ms: u64,
+}
+
+fn control_socket_failure_response(reason: ControlSocketFailureReason) -> serde_json::Value {
+    serde_json::json!({"ok": false, "code": reason.to_string()})
+}
+
+fn validate_socket_path(socket_path: &Path) -> Result<(), CustodyError> {
+    let bytes = socket_path.as_os_str().as_encoded_bytes();
+    if bytes.len() > MAXIMUM_SOCKET_PATH_BYTES {
+        return Err(CustodyError::new(
+            "path-too-long",
+            format!("socket path exceeds {MAXIMUM_SOCKET_PATH_BYTES} bytes"),
+        ));
+    }
+    let parent = socket_path.parent().ok_or_else(|| CustodyError::new("root", "socket path has no parent"))?;
+    ensure_private_directory(parent)?;
+    Ok(())
+}
+
+/// Listen on a Unix domain socket and handle newline-delimited JSON requests.
+///
+/// The socket path must have a private parent directory. An existing stale
+/// socket at the path is unlinked if it is owned by the current process user.
+/// Each connection may handle up to `maximum_requests_per_connection` frames.
+/// Oversize or invalid frames receive a failure response and the connection is
+/// closed. The loop stops when `running` becomes false.
+#[cfg(unix)]
+pub fn listen_control_socket<P, H>(
+    socket_path: P,
+    bounds: &ControlSocketBounds,
+    handler: H,
+    running: &AtomicBool,
+) -> Result<(), CustodyError>
+where
+    P: AsRef<Path>,
+    H: Fn(serde_json::Value) -> Result<serde_json::Value, ControlSocketFailureReason>,
+{
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    let socket_path = socket_path.as_ref();
+    validate_socket_path(socket_path)?;
+    if socket_path.exists() {
+        assert_owned_path(
+            socket_path,
+            &OwnedPathOptions {
+                kind: Some(ObjectKind::Socket),
+                exact_mode: Some(0o600),
+                owner_only: true,
+                canonical: true,
+                ..Default::default()
+            },
+        )
+        .ok();
+        let _ = fs::remove_file(socket_path);
+    }
+    let listener = UnixListener::bind(socket_path).map_err(|e| {
+        CustodyError::new("bind", format!("cannot bind control socket {}: {e}", socket_path.display()))
+    })?;
+    let _ = fs::set_permissions(socket_path, Permissions::from_mode(0o600));
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| CustodyError::new("nonblocking", format!("{e}")))?;
+
+    let header_timeout = Duration::from_millis(bounds.header_timeout_ms.max(1));
+    let idle_timeout = Duration::from_millis(bounds.idle_timeout_ms.max(1));
+
+    while running.load(Ordering::Relaxed) {
+        let (mut stream, _) = match listener.accept() {
+            Ok(conn) => conn,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Err(e) => return Err(CustodyError::new("accept", format!("{e}"))),
+        };
+        let _ = stream.set_read_timeout(Some(header_timeout));
+        let _ = stream.set_write_timeout(Some(idle_timeout));
+
+        let mut requests_handled = 0usize;
+        loop {
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
+            if requests_handled >= bounds.maximum_requests_per_connection.max(1) {
+                break;
+            }
+            let mut frame = Vec::with_capacity(bounds.maximum_frame_bytes + 1);
+            let mut byte = [0u8; 1];
+            loop {
+                match stream.read_exact(&mut byte) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(_) => break,
+                }
+                if byte[0] == b'\n' {
+                    break;
+                }
+                frame.push(byte[0]);
+                if frame.len() > bounds.maximum_frame_bytes {
+                    let resp = control_socket_failure_response(ControlSocketFailureReason::Capacity);
+                    let _ = writeln!(stream, "{}", serde_json::to_string(&resp).unwrap_or_default());
+                    break;
+                }
+            }
+            if frame.len() > bounds.maximum_frame_bytes {
+                break;
+            }
+            if frame.is_empty() {
+                let resp = control_socket_failure_response(ControlSocketFailureReason::InvalidRequest);
+                let _ = writeln!(stream, "{}", serde_json::to_string(&resp).unwrap_or_default());
+                break;
+            }
+            let request: serde_json::Value = match serde_json::from_slice(&frame) {
+                Ok(v) => v,
+                Err(_) => {
+                    let resp = control_socket_failure_response(ControlSocketFailureReason::InvalidRequest);
+                    let _ = writeln!(stream, "{}", serde_json::to_string(&resp).unwrap_or_default());
+                    break;
+                }
+            };
+            let response = match handler(request) {
+                Ok(v) => v,
+                Err(reason) => control_socket_failure_response(reason),
+            };
+            let response_line = serde_json::to_string(&response).unwrap_or_default();
+            if response_line.len() > bounds.maximum_response_bytes {
+                let resp = control_socket_failure_response(ControlSocketFailureReason::ResponseLimit);
+                let _ = writeln!(stream, "{}", serde_json::to_string(&resp).unwrap_or_default());
+            } else {
+                let _ = writeln!(stream, "{response_line}");
+            }
+            requests_handled += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Send a single newline-delimited JSON request to a Unix control socket and
+/// return the parsed response.
+#[cfg(unix)]
+pub fn request_control_socket<P: AsRef<Path>>(
+    socket_path: P,
+    request: &serde_json::Value,
+    maximum_response_bytes: usize,
+    timeout_ms: u64,
+) -> Result<serde_json::Value, CustodyError> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let socket_path = socket_path.as_ref();
+    validate_socket_path(socket_path)?;
+    assert_owned_path(
+        socket_path,
+        &OwnedPathOptions {
+            kind: Some(ObjectKind::Socket),
+            exact_mode: Some(0o600),
+            owner_only: true,
+            canonical: true,
+            ..Default::default()
+        },
+    )?;
+    const MAXIMUM_REQUEST_LINE_BYTES: usize = 1_000_000;
+    let request_line = serde_json::to_string(request).map_err(|e| CustodyError::new("encode", format!("{e}")))?;
+    if request_line.len() > MAXIMUM_REQUEST_LINE_BYTES {
+        return Err(CustodyError::new("request-too-long", "request exceeds sanity bound"));
+    }
+    let timeout = Duration::from_millis(timeout_ms.max(1));
+    let mut stream = UnixStream::connect(socket_path).map_err(|e| {
+        CustodyError::new("connect", format!("cannot connect to {}: {e}", socket_path.display()))
+    })?;
+    stream.set_read_timeout(Some(timeout)).map_err(|e| CustodyError::new("timeout", format!("{e}")))?;
+    stream.set_write_timeout(Some(timeout)).map_err(|e| CustodyError::new("timeout", format!("{e}")))?;
+    stream.write_all(request_line.as_bytes()).map_err(|e| CustodyError::new("write", format!("{e}")))?;
+    stream.write_all(b"\n").map_err(|e| CustodyError::new("write", format!("{e}")))?;
+    let mut response_line = Vec::with_capacity(maximum_response_bytes + 1);
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read_exact(&mut byte) {
+            Ok(()) => {}
+            Err(e) => return Err(CustodyError::new("read", format!("{e}"))),
+        }
+        if byte[0] == b'\n' {
+            break;
+        }
+        response_line.push(byte[0]);
+        if response_line.len() > maximum_response_bytes {
+            return Err(CustodyError::new("response-limit", "response exceeds bound"));
+        }
+    }
+    serde_json::from_slice(&response_line).map_err(|e| CustodyError::new("json", format!("{e}")))
+}
+
+#[cfg(not(unix))]
+pub fn listen_control_socket<P, H>(
+    _socket_path: P,
+    _bounds: &ControlSocketBounds,
+    _handler: H,
+    _running: &std::sync::AtomicBool,
+) -> Result<(), CustodyError> {
+    Err(CustodyError::new("unsupported", "Unix control sockets are not supported on this platform"))
+}
+
+#[cfg(not(unix))]
+pub fn request_control_socket<P: AsRef<Path>>(
+    _socket_path: P,
+    _request: &serde_json::Value,
+    _maximum_response_bytes: usize,
+    _timeout_ms: u64,
+) -> Result<serde_json::Value, CustodyError> {
+    Err(CustodyError::new("unsupported", "Unix control sockets are not supported on this platform"))
+}
+
+// Ensure unused File drops do not close borrowed descriptors. Re-export via the
+// read functions is sufficient; this trait is not public.

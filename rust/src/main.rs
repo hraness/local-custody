@@ -12,12 +12,16 @@
 //!    "minimumBytes":N}`
 //! - `{"op":"atomic_publish","dir":"...","name":"...","contentBase64":"...",
 //!    "createOnce":false}`
+//! - `{"op":"read_protected_descriptor","fd":N,"maximumBytes":N}`
+//! - `{"op":"read_protected_stdin","maximumBytes":N}`
+//! - `{"op":"control_socket_request","socketPath":"...","request":{...},
+//!    "maximumResponseBytes":N,"timeoutMs":N}`
 
 use std::io::{self, BufRead, Write};
 
 use local_custody::{ObjectKind, OwnedPathOptions, StableReadOptions};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op")]
@@ -60,6 +64,27 @@ enum Request {
         content_base64: String,
         #[serde(rename = "createOnce")]
         create_once: Option<bool>,
+    },
+    #[serde(rename = "read_protected_descriptor")]
+    ReadProtectedDescriptor {
+        fd: i32,
+        #[serde(rename = "maximumBytes")]
+        maximum_bytes: Option<usize>,
+    },
+    #[serde(rename = "read_protected_stdin")]
+    ReadProtectedStdin {
+        #[serde(rename = "maximumBytes")]
+        maximum_bytes: Option<usize>,
+    },
+    #[serde(rename = "control_socket_request")]
+    ControlSocket {
+        #[serde(rename = "socketPath")]
+        socket_path: String,
+        request: Value,
+        #[serde(rename = "maximumResponseBytes")]
+        maximum_response_bytes: usize,
+        #[serde(rename = "timeoutMs")]
+        timeout_ms: u64,
     },
 }
 
@@ -210,6 +235,31 @@ fn dispatch(req: Request) -> Result<serde_json::Value, (String, String)> {
             let published = local_custody::atomic_publish(&dir, &name, &content, create_once.unwrap_or(false))
                 .map_err(|e| (e.code, e.message))?;
             Ok(json!({ "path": published }))
+        }
+        Request::ReadProtectedDescriptor { fd, maximum_bytes } => {
+            let content = local_custody::read_protected_descriptor(fd, maximum_bytes)
+                .map_err(|e| (e.code, e.message))?;
+            Ok(json!({ "content": content }))
+        }
+        Request::ReadProtectedStdin { maximum_bytes } => {
+            let content = local_custody::read_protected_stdin(maximum_bytes)
+                .map_err(|e| (e.code, e.message))?;
+            Ok(json!({ "content": content }))
+        }
+        Request::ControlSocket {
+            socket_path,
+            request,
+            maximum_response_bytes,
+            timeout_ms,
+        } => {
+            let response = local_custody::request_control_socket(
+                &socket_path,
+                &request,
+                maximum_response_bytes,
+                timeout_ms,
+            )
+            .map_err(|e| (e.code, e.message))?;
+            Ok(response)
         }
     }
 }

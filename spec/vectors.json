@@ -146,22 +146,27 @@
     {
       "name": "private regular file",
       "arrange": { "kind": "file", "mode": "0600", "content": "token" },
-      "outcome": "returns decoded content"
+      "expect": { "content": "token" }
     },
     {
       "name": "permissive regular file",
-      "arrange": { "kind": "file", "mode": "0644" },
-      "outcome": "reject"
+      "arrange": { "kind": "file", "mode": "0644", "content": "token" },
+      "expect": { "code": "mode" }
     },
     {
       "name": "terminal descriptor",
       "arrange": { "kind": "tty" },
-      "outcome": "reject"
+      "expect": { "code": "tty" }
     },
     {
       "name": "input beyond bound",
       "arrange": { "kind": "file", "mode": "0600", "bytes": 128, "bound": 64 },
-      "outcome": "reject"
+      "expect": { "code": "limit" }
+    },
+    {
+      "name": "negative descriptor",
+      "arrange": null,
+      "expect": { "code": "invalid" }
     }
   ]
 }
