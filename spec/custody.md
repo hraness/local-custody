@@ -117,6 +117,39 @@ The portable contract every implementation proves. Vectors live in
 4. Reads stop at EOF or the byte bound; exceeding the bound fails.
 5. Content is fatal-decoded UTF-8; the caller owns trimming and parsing.
 
+### Sidecar
+
+The Rust crate ships a `local-custody` binary that reproduces the contract
+behind a newline-delimited JSON protocol on stdio.
+
+1. One request per line on stdin; exactly one response line on stdout per
+   request. The process exits on stdin EOF.
+2. Requests are `{"op": <name>, ...}` with one of:
+   `ensure_private_directory` `{path}` → `{path, dev, ino}`;
+   `assert_owned_path` `{path, kind, exactMode, ownerOnly, maximumBytes,
+   minimumBytes, links, canonical}` → `{dev, ino, size}`;
+   `stable_read` `{path, exactMode, ownerOnly, maximumBytes, minimumBytes,
+   links}` → `{dev, ino, size, contentBase64}`;
+   `atomic_publish` `{dir, name, contentBase64, createOnce}` →
+   `{path, created}` where `created` is `false` only when `createOnce`
+   preserved a pre-existing target;
+   `read_protected_descriptor` `{fd, maximumBytes}` → `{content}`;
+   `read_protected_stdin` `{maximumBytes}` → `{content}`;
+   `control_socket_request` `{socketPath, request, maximumResponseBytes,
+   timeoutMs}` → the socket's raw response value.
+3. `exactMode` is an octal **string** (for example `"0600"`); byte bounds are
+   unsigned integers; payloads are base64.
+4. A domain failure is `{"ok":false,"code","message"}` — `code` names the
+   check that failed and `message` is human-readable detail. An
+   `{"ok":false,...}` body **without** `message` is not a sidecar failure:
+   `control_socket_request` passes the socket's own failure envelope through
+   untouched.
+5. `invalid-request` covers unparseable lines, unknown ops, and malformed
+   fields; the sidecar answers every line, never exits early on a bad one.
+6. Every input stays bounded: request lines, response payloads, and read
+   bounds come from the caller's declared limits; loaders add their own
+   byte and deadline ceilings on top.
+
 ### Execution flavor
 
 Every filesystem rule applies identically in the asynchronous and the

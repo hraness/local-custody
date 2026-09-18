@@ -17,6 +17,9 @@ protected descriptor input.
 | `/atomic-publish` | `publishPrivateFile`, `createPrivateFileOnce`, `createPrivateFileOnceSync` |
 | `/control-socket` | `listenControlSocket`, `attachControlSocket`, `requestControlSocket` |
 | `/protected-input` | `readProtectedDescriptor`, `readProtectedStdin` |
+| `/custody-rust` | `loadLocalCustodyRustEngine` — Rust-sidecar-preferred engine with TypeScript fallback |
+| `/artifact-manifest` | `loadLocalCustodyArtifactManifest`, `findLocalCustodyArtifact` — shipped-artifact manifest reader |
+| `/rust-fallback` | `emitLocalCustodyFallback` — bounded fallback diagnostics |
 
 ## Guarantees
 
@@ -32,6 +35,32 @@ protected descriptor input.
 The portable contract — including the corpus a port must reproduce — lives in
 [`spec/custody.md`](spec/custody.md) and [`spec/vectors.json`](spec/vectors.json).
 A Rust implementation passes when it produces every named outcome.
+
+## Rust sidecar
+
+The package ships a native `local-custody` sidecar binary (Linux x64, macOS
+arm64 and x64) under `dist/rust-artifacts/`, with its digests recorded in
+`dist/rust-artifacts/manifest.json`. The `/custody-rust` entrypoint loads it:
+
+```ts
+import { loadLocalCustodyRustEngine } from "@hraness/local-custody/custody-rust";
+
+const engine = await loadLocalCustodyRustEngine();
+engine.implementation; // "rust-sidecar" | "typescript"
+```
+
+Every delegatable operation runs through the sidecar's bounded JSON-lines
+protocol; operations the Rust engine cannot reproduce faithfully — a
+`beforeCommit` commit hook, directory assertions without a link bound,
+non-regular or stdin protected descriptors, and the control-socket server
+lifecycle — keep the TypeScript implementation with a bounded, sanitized
+stderr notice. A missing or misbehaving binary falls back entirely; domain
+failures report as `CustodyError` with the sidecar's failure `code`.
+
+`HRANESS_LOCAL_CUSTODY_CLI_PATH` overrides the staged binary path (for
+development or out-of-band sidecar delivery). Rebuild the host artifact with
+`bun run rust:build:artifacts`; `bun run rust:build:manifest` regenerates the
+manifest for staged targets.
 
 ## Install
 

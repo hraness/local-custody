@@ -4,3 +4,4 @@ coverage/
 .DS_Store
 rust/target/
 rust/**/*.node
+/dist/rust-artifacts/

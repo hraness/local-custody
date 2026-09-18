@@ -9,6 +9,9 @@ const importSpecifiers = [
   `${packageName}/control-socket`,
   `${packageName}/private-paths`,
   `${packageName}/protected-input`,
+  `${packageName}/custody-rust`,
+  `${packageName}/rust-fallback`,
+  `${packageName}/artifact-manifest`,
 ] as const;
 const repository = process.cwd();
 const temporaryRoot = process.platform === "darwin" ? "/private/tmp" : tmpdir();

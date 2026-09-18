@@ -4,9 +4,13 @@
 - `src/atomic-publish.ts` owns atomic private file publication.
 - `src/control-socket.ts` owns the bounded newline-delimited JSON control socket: server and single-request client.
 - `src/protected-input.ts` owns descriptor-based secret input; never argv or environment.
+- `src/custody-rust.ts` owns the Rust-sidecar-preferred engine loader: bounded JSON-lines protocol, typed errors, and per-operation TypeScript fallback.
+- `src/rust-fallback.ts` owns the bounded, sanitized fallback notices emitted when an engine path falls back to TypeScript.
+- `src/artifact-manifest.ts` owns the typed reader for `dist/rust-artifacts/manifest.json`.
 - `src/*.test.ts` and `src/*.property.test.ts` own deterministic regressions and arbitrary-input laws.
-- `spec/custody.md` and `spec/vectors.json` own the portable contract every implementation (including a future Rust port) must reproduce.
-- `scripts/` owns the ESM build, absolute-root determinism check, canonical portfolio inventory, and clean packed-consumer smoke.
+- `rust/` owns the Rust port: the `local-custody` library, the JSON-lines sidecar binary, and its contract tests.
+- `spec/custody.md` and `spec/vectors.json` own the portable contract every implementation — TypeScript and Rust — must reproduce.
+- `scripts/` owns the ESM build, absolute-root determinism check, canonical portfolio inventory, clean packed-consumer smoke, and Rust sidecar staging plus artifact-manifest generation.
 - `.github/workflows/` owns read-only branch validation, checks-gated immutable GitHub Release automation, and the tag-only `npm-release` environment's OIDC trusted-publishing mirror.
 - `package.json`, `portfolio-inventory.json`, `tsconfig.json`, `eslint.config.mjs`, and `bun.lock` own standalone package, portfolio, and verification configuration.
 

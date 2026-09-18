@@ -234,7 +234,7 @@ fn dispatch(req: Request) -> Result<serde_json::Value, (String, String)> {
                 .map_err(|e| ("invalid-request".to_string(), e))?;
             let published = local_custody::atomic_publish(&dir, &name, &content, create_once.unwrap_or(false))
                 .map_err(|e| (e.code, e.message))?;
-            Ok(json!({ "path": published }))
+            Ok(json!({ "path": published.path, "created": published.created }))
         }
         Request::ReadProtectedDescriptor { fd, maximum_bytes } => {
             let content = local_custody::read_protected_descriptor(fd, maximum_bytes)

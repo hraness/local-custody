@@ -454,16 +454,26 @@ pub fn stable_read<P: AsRef<Path>>(
     })
 }
 
+/// The result of a successful [`atomic_publish`]: the published path plus
+/// whether this call wrote new content.
+#[derive(Debug, Clone)]
+pub struct AtomicPublishOutcome {
+    pub path: PathBuf,
+    /// `false` only when `create_once` found and preserved a pre-existing
+    /// target; `true` whenever this call staged and published new content.
+    pub created: bool,
+}
+
 /// Atomically publish `content` as `name` inside `dir`.
 ///
 /// If `create_once` is true and the target already exists, the existing file is
-/// preserved and its path is returned.
+/// preserved and reported with `created: false`.
 pub fn atomic_publish<P: AsRef<Path>>(
     dir: P,
     name: &str,
     content: &[u8],
     create_once: bool,
-) -> Result<PathBuf, CustodyError> {
+) -> Result<AtomicPublishOutcome, CustodyError> {
     let dir = dir.as_ref();
     validate_publish_name(name)?;
     ensure_private_directory(dir)?;
@@ -479,7 +489,10 @@ pub fn atomic_publish<P: AsRef<Path>>(
                 ..Default::default()
             },
         )?;
-        return Ok(target);
+        return Ok(AtomicPublishOutcome {
+            path: target,
+            created: false,
+        });
     }
 
     let tmp_name = format!(".publish-{name}-{}", process_id());
@@ -524,7 +537,10 @@ pub fn atomic_publish<P: AsRef<Path>>(
         },
     )?;
 
-    Ok(target)
+    Ok(AtomicPublishOutcome {
+        path: target,
+        created: true,
+    })
 }
 
 fn process_id() -> u32 {
