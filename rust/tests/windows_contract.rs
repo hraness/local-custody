@@ -82,6 +82,17 @@ fn remaining_platform_specific_requests_fail_explicitly() {
         stable_read(
             &path,
             &StableReadOptions {
+                exact_mode: Some(0o600),
+                maximum_bytes: 1024,
+                ..Default::default()
+            },
+        )
+        .unwrap_err(),
+    );
+    unsupported(
+        stable_read(
+            &path,
+            &StableReadOptions {
                 maximum_bytes: 1024,
                 nonblocking: true,
                 ..Default::default()
@@ -106,7 +117,6 @@ fn private_directories_use_an_exact_current_user_acl() {
         &path,
         &OwnedPathOptions {
             kind: Some(ObjectKind::Directory),
-            exact_mode: Some(0o700),
             owner_only: true,
             ..Default::default()
         },
@@ -137,7 +147,6 @@ fn independent_private_file_acl_is_accepted() {
         &path,
         &OwnedPathOptions {
             kind: Some(ObjectKind::File),
-            exact_mode: Some(0o600),
             owner_only: true,
             links: Some(1),
             ..Default::default()
@@ -147,7 +156,6 @@ fn independent_private_file_acl_is_accepted() {
     let read = stable_read(
         &path,
         &StableReadOptions {
-            exact_mode: Some(0o600),
             owner_only: true,
             maximum_bytes: 7,
             minimum_bytes: Some(7),
@@ -268,7 +276,6 @@ fn sidecar_serves_the_proven_windows_subset() {
             "op": "assert_owned_path",
             "path": private,
             "kind": "directory",
-            "exactMode": "0700",
             "ownerOnly": true,
             "canonical": false
         }),

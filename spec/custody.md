@@ -23,10 +23,10 @@ publication parity:
   and alternate data streams, bind identity to the volume serial number and
   file index obtained from an open handle, and enforce kind, link-count, size,
   and replacement checks.
-- Windows `ownerOnly`, exact file mode `0600`, and exact directory mode `0700`
-  mean one protected, non-inherited DACL containing one full-control ACE for
-  the current user SID, with that SID also owning the object. Other exact modes
-  return `unsupported` rather than approximating Unix permission bits.
+- Windows `ownerOnly` means one protected, non-inherited DACL containing one
+  full-control ACE for the current user SID, with that SID also owning the
+  object. Every `exactMode` returns `unsupported`: Windows access masks do not
+  reproduce Unix read, write, and execute bits exactly.
 - `ensure_private_directory` creates the final directory with that descriptor
   in the creation call, rejects every reparse point in the existing ancestor
   chain, and revalidates owner, DACL, kind, and handle identity after creation.

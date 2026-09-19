@@ -326,7 +326,7 @@
     {
       "name": "Windows exact-mode stable read",
       "arrange": { "platform": "windows", "function": "stable_read", "exactMode": "0600" },
-      "expect": { "outcome": "accept exact current-user ACL" }
+      "expect": { "code": "unsupported" }
     },
     {
       "name": "Windows nonblocking stable read",

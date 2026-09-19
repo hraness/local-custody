@@ -484,14 +484,10 @@ fn validate_windows_mode_options(
     owner_only: bool,
 ) -> Result<(), CustodyError> {
     if let Some(exact) = exact_mode {
-        let supported = if directory { 0o700 } else { 0o600 };
-        if exact != supported {
-            return Err(CustodyError::new(
-                "unsupported",
-                format!("Windows custody cannot represent exact mode {exact:04o}"),
-            ));
-        }
-        return validate_windows_private_security(file, directory, "mode-mismatch");
+        return Err(CustodyError::new(
+            "unsupported",
+            format!("Windows custody cannot represent exact Unix mode {exact:04o}"),
+        ));
     }
     if owner_only {
         validate_windows_private_security(file, directory, "owner-only")?;

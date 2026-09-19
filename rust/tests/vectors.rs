@@ -386,5 +386,5 @@ fn platform_support_vectors_have_exact_outcomes() {
             code => panic!("unexpected platform code {code:?}"),
         }
     }
-    assert_eq!((accepted, unsupported, path), (3, 5, 1));
+    assert_eq!((accepted, unsupported, path), (2, 6, 1));
 }
