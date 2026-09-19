@@ -1301,6 +1301,7 @@ pub fn stable_read<P: AsRef<Path>>(
         bytes.extend_from_slice(&buffer[..read]);
     }
     let handle_after = windows_file_snapshot(&file, path)?;
+    validate_windows_mode_options(&file, false, options.exact_mode, options.owner_only)?;
     let (_path_file, path_metadata_after, path_after) = windows_path_snapshot(path)?;
     if !path_metadata_after.is_file() || before != handle_after || before != path_after {
         return Err(CustodyError::new(
