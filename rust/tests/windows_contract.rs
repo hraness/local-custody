@@ -17,6 +17,29 @@ fn unsupported(error: local_custody::CustodyError) {
     assert_eq!(error.code, "unsupported");
 }
 
+fn set_private_file_acl(path: &std::path::Path) {
+    let script = r#"
+param([string]$Path)
+$Sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$Acl = New-Object System.Security.AccessControl.FileSecurity
+$Acl.SetOwner($Sid)
+$Acl.SetAccessRuleProtection($true, $false)
+$Rule = New-Object System.Security.AccessControl.FileSystemAccessRule($Sid, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow)
+$Acl.AddAccessRule($Rule)
+Set-Acl -LiteralPath $Path -AclObject $Acl
+"#;
+    let output = Command::new("pwsh")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn remaining_platform_specific_requests_fail_explicitly() {
     let temporary = TempDir::new().unwrap();
@@ -100,6 +123,39 @@ fn private_directories_use_an_exact_current_user_acl() {
     )
     .unwrap_err();
     assert!(error.code == "owner" || error.code == "owner-only");
+}
+
+#[test]
+fn independent_private_file_acl_is_accepted() {
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("private-file");
+    fs::write(&path, b"payload").unwrap();
+    set_private_file_acl(&path);
+    let identity = assert_owned_path(
+        &path,
+        &OwnedPathOptions {
+            kind: Some(ObjectKind::File),
+            exact_mode: Some(0o600),
+            owner_only: true,
+            links: Some(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let read = stable_read(
+        &path,
+        &StableReadOptions {
+            exact_mode: Some(0o600),
+            owner_only: true,
+            maximum_bytes: 7,
+            minimum_bytes: Some(7),
+            links: Some(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(read.bytes, b"payload");
+    assert_eq!(read.identity, identity);
 }
 
 #[test]
