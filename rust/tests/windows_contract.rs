@@ -24,7 +24,7 @@ fn remaining_platform_specific_requests_fail_explicitly() {
     fs::write(&path, b"payload").unwrap();
     unsupported(
         assert_owned_path(
-            &path,
+            temporary.path().join("missing"),
             &OwnedPathOptions {
                 kind: Some(ObjectKind::File),
                 exact_mode: Some(0o640),

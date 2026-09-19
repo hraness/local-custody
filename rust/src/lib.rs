@@ -477,18 +477,24 @@ struct WindowsFileSnapshot {
 }
 
 #[cfg(windows)]
-fn validate_windows_mode_options(
-    file: &File,
-    directory: bool,
-    exact_mode: Option<u32>,
-    owner_only: bool,
-) -> Result<(), CustodyError> {
+fn reject_windows_exact_mode(exact_mode: Option<u32>) -> Result<(), CustodyError> {
     if let Some(exact) = exact_mode {
         return Err(CustodyError::new(
             "unsupported",
             format!("Windows custody cannot represent exact Unix mode {exact:04o}"),
         ));
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_windows_mode_options(
+    file: &File,
+    directory: bool,
+    exact_mode: Option<u32>,
+    owner_only: bool,
+) -> Result<(), CustodyError> {
+    reject_windows_exact_mode(exact_mode)?;
     if owner_only {
         validate_windows_private_security(file, directory, "owner-only")?;
     }
@@ -912,6 +918,7 @@ pub fn assert_owned_path<P: AsRef<Path>>(
     options: &OwnedPathOptions,
 ) -> Result<ObjectIdentity, CustodyError> {
     let path = path.as_ref();
+    reject_windows_exact_mode(options.exact_mode)?;
     if matches!(options.kind, Some(ObjectKind::Socket)) {
         return Err(CustodyError::new(
             "unsupported",
@@ -1209,6 +1216,7 @@ pub fn stable_read<P: AsRef<Path>>(
     options: &StableReadOptions,
 ) -> Result<StableReadResult, CustodyError> {
     let path = path.as_ref();
+    reject_windows_exact_mode(options.exact_mode)?;
     if options.nonblocking {
         return Err(CustodyError::new(
             "unsupported",
