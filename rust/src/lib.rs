@@ -726,10 +726,11 @@ fn validate_windows_private_security(
     use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HANDLE};
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
-        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-        ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE,
-        DACL_SECURITY_INFORMATION, INHERITED_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
-        PSID, SE_DACL_PRESENT, SE_DACL_PROTECTED,
+        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetLengthSid,
+        GetSecurityDescriptorControl, IsValidSid, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
+        ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
+        OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSID, SE_DACL_DEFAULTED, SE_DACL_PRESENT,
+        SE_DACL_PROTECTED,
     };
     use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
     use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
@@ -769,6 +770,7 @@ fn validate_windows_private_security(
     let mut revision = 0u32;
     if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0
         || control & (SE_DACL_PRESENT | SE_DACL_PROTECTED) != SE_DACL_PRESENT | SE_DACL_PROTECTED
+        || control & SE_DACL_DEFAULTED != 0
     {
         return Err(CustodyError::new(
             code,
@@ -798,6 +800,13 @@ fn validate_windows_private_security(
             "object DACL has no readable owner ACE",
         ));
     }
+    let header = unsafe { &*(ace_pointer as *const ACE_HEADER) };
+    if usize::from(header.AceSize) < std::mem::size_of::<ACCESS_ALLOWED_ACE>() {
+        return Err(CustodyError::new(
+            code,
+            "object DACL owner ACE is truncated",
+        ));
+    }
     let ace = unsafe { &*(ace_pointer as *const ACCESS_ALLOWED_ACE) };
     let expected_flags = if directory {
         (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8
@@ -805,10 +814,17 @@ fn validate_windows_private_security(
         0
     };
     let ace_sid = (&ace.SidStart as *const u32).cast_mut().cast();
+    if unsafe { IsValidSid(ace_sid) } == 0 {
+        return Err(CustodyError::new(code, "object DACL owner SID is invalid"));
+    }
+    let sid_length = unsafe { GetLengthSid(ace_sid) } as usize;
+    let sid_end = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart) + sid_length;
     if u32::from(ace.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE
         || ace.Header.AceFlags & INHERITED_ACE as u8 != 0
         || ace.Header.AceFlags != expected_flags
         || ace.Mask != FILE_ALL_ACCESS
+        || sid_length == 0
+        || sid_end > usize::from(ace.Header.AceSize)
         || unsafe { EqualSid(ace_sid, current.as_ptr()) } == 0
     {
         return Err(CustodyError::new(
