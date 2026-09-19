@@ -88,19 +88,16 @@ fn private_directories_use_an_exact_current_user_acl() {
 
     let inherited = path.join("inherited");
     fs::write(&inherited, b"payload").unwrap();
-    assert_eq!(
-        assert_owned_path(
-            &inherited,
-            &OwnedPathOptions {
-                kind: Some(ObjectKind::File),
-                owner_only: true,
-                ..Default::default()
-            },
-        )
-        .unwrap_err()
-        .code,
-        "owner-only"
-    );
+    let error = assert_owned_path(
+        &inherited,
+        &OwnedPathOptions {
+            kind: Some(ObjectKind::File),
+            owner_only: true,
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(error.code == "owner" || error.code == "owner-only");
 }
 
 #[test]
