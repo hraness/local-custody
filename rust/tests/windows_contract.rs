@@ -16,14 +16,16 @@ fn unsupported(error: local_custody::CustodyError) {
 }
 
 #[test]
-fn unix_specific_custody_requests_fail_explicitly() {
-    unsupported(ensure_private_directory(r"C:\custody").unwrap_err());
+fn remaining_platform_specific_requests_fail_explicitly() {
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("state");
+    fs::write(&path, b"payload").unwrap();
     unsupported(
         assert_owned_path(
-            r"C:\custody\state",
+            &path,
             &OwnedPathOptions {
                 kind: Some(ObjectKind::File),
-                owner_only: true,
+                exact_mode: Some(0o640),
                 ..Default::default()
             },
         )
@@ -31,7 +33,7 @@ fn unix_specific_custody_requests_fail_explicitly() {
     );
     unsupported(
         assert_owned_path(
-            r"C:\custody\state",
+            &path,
             &OwnedPathOptions {
                 kind: Some(ObjectKind::File),
                 canonical: true,
@@ -51,19 +53,54 @@ fn unix_specific_custody_requests_fail_explicitly() {
     assert_eq!(stream.code, "path");
     unsupported(
         stable_read(
-            r"C:\custody\state",
+            &path,
             &StableReadOptions {
-                owner_only: true,
                 maximum_bytes: 1024,
+                nonblocking: true,
                 ..Default::default()
             },
         )
         .unwrap_err(),
     );
-    unsupported(atomic_publish(r"C:\custody", "state", b"value", true).unwrap_err());
+    unsupported(atomic_publish(temporary.path(), "state", b"value", true).unwrap_err());
     unsupported(assert_owned_fd(0, &OwnedPathOptions::default()).unwrap_err());
     unsupported(read_protected_descriptor(0, Some(1024)).unwrap_err());
     unsupported(request_control_socket(r"C:\custody\control", &json!({}), 1024, 1000).unwrap_err());
+}
+
+#[test]
+fn private_directories_use_an_exact_current_user_acl() {
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("private");
+    let created = ensure_private_directory(&path).unwrap();
+    let reopened = ensure_private_directory(&path).unwrap();
+    assert_eq!(created.identity, reopened.identity);
+    assert_owned_path(
+        &path,
+        &OwnedPathOptions {
+            kind: Some(ObjectKind::Directory),
+            exact_mode: Some(0o700),
+            owner_only: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let inherited = path.join("inherited");
+    fs::write(&inherited, b"payload").unwrap();
+    assert_eq!(
+        assert_owned_path(
+            &inherited,
+            &OwnedPathOptions {
+                kind: Some(ObjectKind::File),
+                owner_only: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .code,
+        "owner-only"
+    );
 }
 
 #[test]
