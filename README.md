@@ -75,6 +75,13 @@ dependency pinned to a reviewed commit:
 local-custody = { git = "https://github.com/hraness/local-custody", rev = "<sha>" }
 ```
 
+Native Windows CI covers handle identity, reparse and alternate-stream
+rejection, hard-link counts, stable reads, exact current-user ACL validation,
+private-directory creation, and the matching sidecar wire operations. Windows
+atomic publication, descriptor custody, nonblocking opens, canonical path
+equality, and control sockets remain unsupported. No Windows sidecar is
+published or selected by the package yet.
+
 Descriptor custody and the commit guard are process-local and intentionally
 absent from the sidecar protocol — see `spec/custody.md`.
 

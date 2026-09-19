@@ -27,6 +27,8 @@ $Acl.SetAccessRuleProtection($true, $false)
 $Rule = New-Object System.Security.AccessControl.FileSystemAccessRule($Sid, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow)
 $Acl.AddAccessRule($Rule)
 Set-Acl -LiteralPath $Path -AclObject $Acl
+& icacls.exe $Path /setowner "*$($Sid.Value)" /C | Out-Null
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 "#;
     let output = Command::new("pwsh")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
