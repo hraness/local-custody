@@ -350,13 +350,62 @@ pub fn ensure_private_directory<P: AsRef<Path>>(path: P) -> Result<PrivateDirect
     })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn ensure_private_directory<P: AsRef<Path>>(path: P) -> Result<PrivateDirectory, CustodyError> {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+    let path = path.as_ref();
+    if !path.is_absolute() || path.parent().is_none() {
+        return Err(CustodyError::new(
+            "root",
+            "refusing a relative path or filesystem root",
+        ));
+    }
+    reject_windows_stream_path(path)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| CustodyError::new("root", "path has no parent"))?;
+    validate_windows_ancestor_chain(parent)?;
+    if !path.exists() {
+        let descriptor = private_windows_security_descriptor(true)?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        let wide = windows_wide_path(path)?;
+        if unsafe { CreateDirectoryW(wide.as_ptr(), &attributes) } == 0 {
+            let error = unsafe { GetLastError() };
+            if error != ERROR_ALREADY_EXISTS {
+                return Err(CustodyError::new(
+                    "create",
+                    format!("cannot create {}: Windows error {error}", path.display()),
+                ));
+            }
+        }
+    }
+    let (file, metadata, snapshot) = windows_path_snapshot(path)?;
+    if !metadata.is_dir() {
+        return Err(CustodyError::new(
+            "not-directory",
+            format!("{} is not a directory", path.display()),
+        ));
+    }
+    validate_windows_private_security(&file, true, "owner-only")?;
+    Ok(PrivateDirectory {
+        path: path.to_path_buf(),
+        identity: snapshot.identity,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn ensure_private_directory<P: AsRef<Path>>(
     _path: P,
 ) -> Result<PrivateDirectory, CustodyError> {
     Err(CustodyError::new(
         "unsupported",
-        "private-directory custody requires Unix owner and mode semantics",
+        "private-directory custody is not supported on this platform",
     ))
 }
 
@@ -428,15 +477,26 @@ struct WindowsFileSnapshot {
 }
 
 #[cfg(windows)]
-fn reject_windows_mode_options(
+fn reject_windows_exact_mode(exact_mode: Option<u32>) -> Result<(), CustodyError> {
+    if let Some(exact) = exact_mode {
+        return Err(CustodyError::new(
+            "unsupported",
+            format!("Windows custody cannot represent exact Unix mode {exact:04o}"),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_windows_mode_options(
+    file: &File,
+    directory: bool,
     exact_mode: Option<u32>,
     owner_only: bool,
 ) -> Result<(), CustodyError> {
-    if exact_mode.is_some() || owner_only {
-        return Err(CustodyError::new(
-            "unsupported",
-            "owner-only and exact-mode checks require Unix mode semantics",
-        ));
+    reject_windows_exact_mode(exact_mode)?;
+    if owner_only {
+        validate_windows_private_security(file, directory, "owner-only")?;
     }
     Ok(())
 }
@@ -456,17 +516,337 @@ fn reject_windows_stream_path(path: &Path) -> Result<(), CustodyError> {
 }
 
 #[cfg(windows)]
+fn windows_wide_path(path: &Path) -> Result<Vec<u16>, CustodyError> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(CustodyError::new("path", "Windows path contains NUL"));
+    }
+    wide.push(0);
+    Ok(wide)
+}
+
+#[cfg(windows)]
+fn validate_windows_ancestor_chain(path: &Path) -> Result<(), CustodyError> {
+    let mut ancestors: Vec<&Path> = path.ancestors().collect();
+    ancestors.reverse();
+    for ancestor in ancestors {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        let (_file, metadata, _snapshot) = windows_path_snapshot(ancestor)?;
+        if !metadata.is_dir() {
+            return Err(CustodyError::new(
+                "not-directory",
+                format!("{} is not a directory", ancestor.display()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+struct WindowsHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for WindowsHandle {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct WindowsSecurityDescriptor(windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
+
+#[cfg(windows)]
+impl Drop for WindowsSecurityDescriptor {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::LocalFree(self.0 as _);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct WindowsSid {
+    storage: Vec<usize>,
+}
+
+#[cfg(windows)]
+impl WindowsSid {
+    fn as_ptr(&self) -> windows_sys::Win32::Security::PSID {
+        self.storage.as_ptr() as _
+    }
+}
+
+#[cfg(windows)]
+fn current_windows_user_sid() -> Result<WindowsSid, CustodyError> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Security::{
+        GetLengthSid, GetTokenInformation, IsValidSid, TokenUser, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(CustodyError::new(
+            "owner",
+            format!("cannot open current process token: {}", unsafe {
+                GetLastError()
+            }),
+        ));
+    }
+    let token = WindowsHandle(token);
+    let mut bytes = 0u32;
+    unsafe {
+        GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut bytes);
+    }
+    if bytes == 0 || bytes > 64 * 1024 {
+        return Err(CustodyError::new(
+            "owner",
+            "current user token has invalid size",
+        ));
+    }
+    let words = usize::try_from(bytes)
+        .ok()
+        .and_then(|value| value.checked_add(std::mem::size_of::<usize>() - 1))
+        .map(|value| value / std::mem::size_of::<usize>())
+        .ok_or_else(|| CustodyError::new("owner", "current user token size overflow"))?;
+    let mut buffer = vec![0usize; words];
+    if unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        )
+    } == 0
+    {
+        return Err(CustodyError::new(
+            "owner",
+            format!("cannot inspect current process token: {}", unsafe {
+                GetLastError()
+            }),
+        ));
+    }
+    let token_user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
+    if token_user.User.Sid.is_null() || unsafe { IsValidSid(token_user.User.Sid) } == 0 {
+        return Err(CustodyError::new("owner", "current user SID is invalid"));
+    }
+    let sid_bytes = unsafe { GetLengthSid(token_user.User.Sid) };
+    if sid_bytes == 0 || sid_bytes > 1024 {
+        return Err(CustodyError::new(
+            "owner",
+            "current user SID has invalid size",
+        ));
+    }
+    let sid_words = usize::try_from(sid_bytes)
+        .ok()
+        .and_then(|value| value.checked_add(std::mem::size_of::<usize>() - 1))
+        .map(|value| value / std::mem::size_of::<usize>())
+        .ok_or_else(|| CustodyError::new("owner", "current user SID size overflow"))?;
+    let mut storage = vec![0usize; sid_words];
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            token_user.User.Sid.cast::<u8>(),
+            storage.as_mut_ptr().cast::<u8>(),
+            sid_bytes as usize,
+        );
+    }
+    Ok(WindowsSid { storage })
+}
+
+#[cfg(windows)]
+fn windows_sid_string(sid: &WindowsSid) -> Result<String, CustodyError> {
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    let mut text = std::ptr::null_mut();
+    if unsafe { ConvertSidToStringSidW(sid.as_ptr(), &mut text) } == 0 || text.is_null() {
+        return Err(CustodyError::new("owner", "cannot encode current user SID"));
+    }
+    let allocation = WindowsSecurityDescriptor(text.cast());
+    let mut length = 0usize;
+    while length < 256 && unsafe { *text.add(length) } != 0 {
+        length += 1;
+    }
+    if length == 256 {
+        return Err(CustodyError::new(
+            "owner",
+            "current user SID text is unbounded",
+        ));
+    }
+    let result = String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) })
+        .map_err(|_| CustodyError::new("owner", "current user SID text is invalid"));
+    drop(allocation);
+    result
+}
+
+#[cfg(windows)]
+fn private_windows_security_descriptor(
+    directory: bool,
+) -> Result<WindowsSecurityDescriptor, CustodyError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    let sid = current_windows_user_sid()?;
+    let sid_text = windows_sid_string(&sid)?;
+    let inheritance = if directory { "OICI" } else { "" };
+    let sddl = format!("O:{sid_text}G:{sid_text}D:P(A;{inheritance};FA;;;{sid_text})");
+    let wide: Vec<u16> = std::ffi::OsStr::new(&sddl)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut descriptor = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+        || descriptor.is_null()
+    {
+        return Err(CustodyError::new(
+            "owner-only",
+            "cannot build private Windows security descriptor",
+        ));
+    }
+    Ok(WindowsSecurityDescriptor(descriptor))
+}
+
+#[cfg(windows)]
+fn validate_windows_private_security(
+    file: &File,
+    directory: bool,
+    code: &str,
+) -> Result<(), CustodyError> {
+    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HANDLE};
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetLengthSid,
+        GetSecurityDescriptorControl, IsValidSid, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
+        ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
+        OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSID, SE_DACL_DEFAULTED, SE_DACL_PRESENT,
+        SE_DACL_PROTECTED,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
+    let current = current_windows_user_sid()?;
+    let mut owner: PSID = std::ptr::null_mut();
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut descriptor = std::ptr::null_mut();
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle() as HANDLE,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != ERROR_SUCCESS || descriptor.is_null() {
+        return Err(CustodyError::new(
+            code,
+            format!("cannot inspect Windows security descriptor: {status}"),
+        ));
+    }
+    let descriptor = WindowsSecurityDescriptor(descriptor);
+    if owner.is_null() || unsafe { EqualSid(owner, current.as_ptr()) } == 0 {
+        return Err(CustodyError::new(
+            "owner",
+            "object is not owned by the current user",
+        ));
+    }
+    if dacl.is_null() {
+        return Err(CustodyError::new(code, "object has a null DACL"));
+    }
+    let mut control = 0u16;
+    let mut revision = 0u32;
+    if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0
+        || control & (SE_DACL_PRESENT | SE_DACL_PROTECTED) != SE_DACL_PRESENT | SE_DACL_PROTECTED
+        || control & SE_DACL_DEFAULTED != 0
+    {
+        return Err(CustodyError::new(
+            code,
+            "object DACL is not present and protected",
+        ));
+    }
+    let mut information = ACL_SIZE_INFORMATION::default();
+    if unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut information as *mut ACL_SIZE_INFORMATION).cast(),
+            std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    } == 0
+        || information.AceCount != 1
+    {
+        return Err(CustodyError::new(
+            code,
+            "object DACL is not an exact single-user ACL",
+        ));
+    }
+    let mut ace_pointer = std::ptr::null_mut();
+    if unsafe { GetAce(dacl, 0, &mut ace_pointer) } == 0 || ace_pointer.is_null() {
+        return Err(CustodyError::new(
+            code,
+            "object DACL has no readable owner ACE",
+        ));
+    }
+    let header = unsafe { &*(ace_pointer as *const ACE_HEADER) };
+    if usize::from(header.AceSize) < std::mem::size_of::<ACCESS_ALLOWED_ACE>() {
+        return Err(CustodyError::new(
+            code,
+            "object DACL owner ACE is truncated",
+        ));
+    }
+    let ace = unsafe { &*(ace_pointer as *const ACCESS_ALLOWED_ACE) };
+    let expected_flags = if directory {
+        (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8
+    } else {
+        0
+    };
+    let ace_sid = (&ace.SidStart as *const u32).cast_mut().cast();
+    if unsafe { IsValidSid(ace_sid) } == 0 {
+        return Err(CustodyError::new(code, "object DACL owner SID is invalid"));
+    }
+    let sid_length = unsafe { GetLengthSid(ace_sid) } as usize;
+    let sid_end = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart) + sid_length;
+    if u32::from(ace.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE
+        || ace.Header.AceFlags & INHERITED_ACE as u8 != 0
+        || ace.Header.AceFlags != expected_flags
+        || ace.Mask != FILE_ALL_ACCESS
+        || sid_length == 0
+        || sid_end > usize::from(ace.Header.AceSize)
+        || unsafe { EqualSid(ace_sid, current.as_ptr()) } == 0
+    {
+        return Err(CustodyError::new(
+            code,
+            "object DACL grants access beyond its owner",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn open_windows_path(path: &Path, read: bool) -> Result<File, CustodyError> {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
     };
     reject_windows_stream_path(path)?;
     let mut options = OpenOptions::new();
     if read {
         options.read(true);
     } else {
-        options.access_mode(0);
+        options.access_mode(READ_CONTROL);
     }
     options
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
@@ -554,7 +934,7 @@ pub fn assert_owned_path<P: AsRef<Path>>(
     options: &OwnedPathOptions,
 ) -> Result<ObjectIdentity, CustodyError> {
     let path = path.as_ref();
-    reject_windows_mode_options(options.exact_mode, options.owner_only)?;
+    reject_windows_exact_mode(options.exact_mode)?;
     if matches!(options.kind, Some(ObjectKind::Socket)) {
         return Err(CustodyError::new(
             "unsupported",
@@ -567,10 +947,16 @@ pub fn assert_owned_path<P: AsRef<Path>>(
             "canonical path equality requires Unix path semantics",
         ));
     }
-    let (_file, metadata, snapshot) = windows_path_snapshot(path)?;
+    let (file, metadata, snapshot) = windows_path_snapshot(path)?;
     if let Some(kind) = options.kind {
         validate_kind(&metadata, kind)?;
     }
+    validate_windows_mode_options(
+        &file,
+        metadata.is_dir(),
+        options.exact_mode,
+        options.owner_only,
+    )?;
     let size = snapshot.identity.size;
     if let Some(maximum) = options.maximum_bytes {
         if size > maximum {
@@ -846,7 +1232,7 @@ pub fn stable_read<P: AsRef<Path>>(
     options: &StableReadOptions,
 ) -> Result<StableReadResult, CustodyError> {
     let path = path.as_ref();
-    reject_windows_mode_options(options.exact_mode, options.owner_only)?;
+    reject_windows_exact_mode(options.exact_mode)?;
     if options.nonblocking {
         return Err(CustodyError::new(
             "unsupported",
@@ -871,6 +1257,7 @@ pub fn stable_read<P: AsRef<Path>>(
             format!("{} is not a regular file", path.display()),
         ));
     }
+    validate_windows_mode_options(&file, false, options.exact_mode, options.owner_only)?;
     let size = before.identity.size;
     if size > options.maximum_bytes {
         return Err(CustodyError::new(
@@ -914,6 +1301,7 @@ pub fn stable_read<P: AsRef<Path>>(
         bytes.extend_from_slice(&buffer[..read]);
     }
     let handle_after = windows_file_snapshot(&file, path)?;
+    validate_windows_mode_options(&file, false, options.exact_mode, options.owner_only)?;
     let (_path_file, path_metadata_after, path_after) = windows_path_snapshot(path)?;
     if !path_metadata_after.is_file() || before != handle_after || before != path_after {
         return Err(CustodyError::new(
@@ -1752,6 +2140,71 @@ pub fn request_control_socket<P: AsRef<Path>>(
         "unsupported",
         "Unix control sockets are not supported on this platform",
     ))
+}
+
+#[cfg(all(test, windows))]
+mod windows_acl_tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::windows::io::FromRawHandle;
+
+    #[test]
+    fn owner_only_file_acl_is_accepted_by_assertion_and_stable_read() {
+        use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
+        };
+        let temporary = tempfile::TempDir::new().unwrap();
+        let path = temporary.path().join("private-file");
+        let descriptor = private_windows_security_descriptor(false).unwrap();
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        let wide = windows_wide_path(&path).unwrap();
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(handle, INVALID_HANDLE_VALUE);
+        let mut file = unsafe { File::from_raw_handle(handle) };
+        file.write_all(b"payload").unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let identity = assert_owned_path(
+            &path,
+            &OwnedPathOptions {
+                kind: Some(ObjectKind::File),
+                owner_only: true,
+                links: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let read = stable_read(
+            &path,
+            &StableReadOptions {
+                owner_only: true,
+                maximum_bytes: 7,
+                minimum_bytes: Some(7),
+                links: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(read.bytes, b"payload");
+        assert_eq!(read.identity, identity);
+    }
 }
 
 // Ensure unused File drops do not close borrowed descriptors. Re-export via the

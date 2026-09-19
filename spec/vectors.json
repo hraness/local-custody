@@ -306,6 +306,11 @@
     {
       "name": "Windows owner-only owned path",
       "arrange": { "platform": "windows", "function": "assert_owned_path", "ownerOnly": true },
+      "expect": { "outcome": "accept exact current-user ACL" }
+    },
+    {
+      "name": "Windows unsupported exact file mode",
+      "arrange": { "platform": "windows", "function": "assert_owned_path", "exactMode": "0640" },
       "expect": { "code": "unsupported" }
     },
     {
@@ -331,7 +336,7 @@
     {
       "name": "Windows private directory",
       "arrange": { "platform": "windows", "function": "ensure_private_directory" },
-      "expect": { "code": "unsupported" }
+      "expect": { "outcome": "created exact current-user ACL" }
     },
     {
       "name": "Windows atomic publication",
