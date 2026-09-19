@@ -370,7 +370,7 @@ pub fn assert_owned_fd(
     }
     // Duplicate the descriptor (F_DUPFD_CLOEXEC): the `File` owns only the
     // duplicate, so dropping it never closes the caller's descriptor.
-    let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC) };
+    let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
     if dup < 0 {
         return Err(CustodyError::new(
             "dup",
