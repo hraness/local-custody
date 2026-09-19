@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
@@ -43,5 +45,3 @@ fn negative_descriptor_rejected() {
     let err = read_protected_descriptor(-1, Some(64)).unwrap_err();
     assert_eq!(err.code, "invalid");
 }
-
-

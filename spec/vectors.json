@@ -301,5 +301,47 @@
       "arrange": null,
       "expect": { "code": "invalid" }
     }
+  ],
+  "platformSupport": [
+    {
+      "name": "Windows owner-only owned path",
+      "arrange": { "platform": "windows", "function": "assert_owned_path", "ownerOnly": true },
+      "expect": { "code": "unsupported" }
+    },
+    {
+      "name": "Windows canonical owned path",
+      "arrange": { "platform": "windows", "function": "assert_owned_path", "canonical": true },
+      "expect": { "code": "unsupported" }
+    },
+    {
+      "name": "Windows alternate data stream",
+      "arrange": { "platform": "windows", "function": "assert_owned_path", "path": "C:\\custody\\state:stream" },
+      "expect": { "code": "path" }
+    },
+    {
+      "name": "Windows exact-mode stable read",
+      "arrange": { "platform": "windows", "function": "stable_read", "exactMode": "0600" },
+      "expect": { "code": "unsupported" }
+    },
+    {
+      "name": "Windows nonblocking stable read",
+      "arrange": { "platform": "windows", "function": "stable_read", "nonblocking": true },
+      "expect": { "code": "unsupported" }
+    },
+    {
+      "name": "Windows private directory",
+      "arrange": { "platform": "windows", "function": "ensure_private_directory" },
+      "expect": { "code": "unsupported" }
+    },
+    {
+      "name": "Windows atomic publication",
+      "arrange": { "platform": "windows", "function": "atomic_publish" },
+      "expect": { "code": "unsupported" }
+    },
+    {
+      "name": "Windows descriptor and control transports",
+      "arrange": { "platform": "windows", "functions": ["assert_owned_fd", "read_protected_descriptor", "request_control_socket"] },
+      "expect": { "code": "unsupported" }
+    }
   ]
 }

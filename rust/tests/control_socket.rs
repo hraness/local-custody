@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -41,13 +43,14 @@ fn socket_bounds() -> ControlSocketBounds {
 
 fn serve(path: PathBuf, stop: Arc<AtomicBool>) {
     let bounds = socket_bounds();
-    let handler = |req: serde_json::Value| -> Result<serde_json::Value, ControlSocketFailureReason> {
-        if req == json!({"ping": 1}) {
-            Ok(json!({"ok": true, "pong": 1}))
-        } else {
-            Err(ControlSocketFailureReason::InvalidRequest)
-        }
-    };
+    let handler =
+        |req: serde_json::Value| -> Result<serde_json::Value, ControlSocketFailureReason> {
+            if req == json!({"ping": 1}) {
+                Ok(json!({"ok": true, "pong": 1}))
+            } else {
+                Err(ControlSocketFailureReason::InvalidRequest)
+            }
+        };
     listen_control_socket(&path, &bounds, handler, &stop).unwrap();
 }
 
@@ -66,13 +69,7 @@ fn single_complete_request() {
         }
         thread::sleep(Duration::from_millis(10));
     }
-    let resp = request_control_socket(
-        &path,
-        &json!({"ping": 1}),
-        4_096,
-        1_000,
-    )
-    .unwrap();
+    let resp = request_control_socket(&path, &json!({"ping": 1}), 4_096, 1_000).unwrap();
     assert_eq!(resp, json!({"ok": true, "pong": 1}));
     stop.store(false, Ordering::Relaxed);
     server.join().unwrap();
@@ -87,7 +84,13 @@ fn unparsable_frame_returns_failure() {
     let server_path = path.clone();
     let server = thread::spawn(move || {
         let bounds = socket_bounds();
-        listen_control_socket(&server_path, &bounds, |_req| Err(ControlSocketFailureReason::InvalidRequest), &stop2).unwrap();
+        listen_control_socket(
+            &server_path,
+            &bounds,
+            |_req| Err(ControlSocketFailureReason::InvalidRequest),
+            &stop2,
+        )
+        .unwrap();
     });
     for _ in 0..100 {
         if path.exists() {
@@ -111,9 +114,12 @@ fn oversize_response_exceeds_bound() {
     let server_path = path.clone();
     let server = thread::spawn(move || {
         let bounds = socket_bounds();
-        listen_control_socket(&server_path, &bounds, |_req| {
-            Ok(json!({"ok": true, "data": "x".repeat(5_000)}))
-        }, &stop2)
+        listen_control_socket(
+            &server_path,
+            &bounds,
+            |_req| Ok(json!({"ok": true, "data": "x".repeat(5_000)})),
+            &stop2,
+        )
         .unwrap();
     });
     for _ in 0..100 {

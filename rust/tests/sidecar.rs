@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Wire-level contract tests for the `local-custody` JSON-lines sidecar.
 //!
 //! Each request is one JSON line on stdin; the sidecar must answer with
@@ -58,15 +60,18 @@ fn run_sidecar(requests: &[String]) -> Vec<Value> {
         // Drop closes stdin so the sidecar observes EOF and exits.
     }
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success(), "sidecar exited with {:?}", output.status);
+    assert!(
+        output.status.success(),
+        "sidecar exited with {:?}",
+        output.status
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), requests.len(), "one response line per request");
     lines
         .iter()
         .map(|line| {
-            serde_json::from_str(line)
-                .unwrap_or_else(|_| panic!("response is not JSON: {line}"))
+            serde_json::from_str(line).unwrap_or_else(|_| panic!("response is not JSON: {line}"))
         })
         .collect()
 }
@@ -95,8 +100,7 @@ fn envelope_vectors() {
     for (case, response) in data.sidecar_envelope.iter().zip(responses.iter()) {
         let failure = is_failure_envelope(response);
         assert_eq!(
-            failure,
-            !case.expect.ok,
+            failure, !case.expect.ok,
             "{}: unexpected envelope {response}",
             case.name,
         );
@@ -104,7 +108,11 @@ fn envelope_vectors() {
             assert_eq!(&response["code"], code, "{}: wrong failure code", case.name);
         }
         if !case.expect.ok {
-            assert!(response["code"].is_string(), "{}: failure must carry a code", case.name);
+            assert!(
+                response["code"].is_string(),
+                "{}: failure must carry a code",
+                case.name
+            );
         }
         if let Some(fields) = &case.expect.fields {
             for (key, expected) in fields {
@@ -123,15 +131,21 @@ fn envelope_vectors() {
 #[test]
 fn invalid_requests_are_rejected_per_line() {
     let requests = vec![
-        String::new(),                          // empty request line
-        "not-json".to_string(),                 // malformed JSON
-        "{\"op\":\"no-such-op\"}".to_string(),  // unknown op
-        "{\"op\":123}".to_string(),             // non-string op
+        String::new(),                         // empty request line
+        "not-json".to_string(),                // malformed JSON
+        "{\"op\":\"no-such-op\"}".to_string(), // unknown op
+        "{\"op\":123}".to_string(),            // non-string op
     ];
     let responses = run_sidecar(&requests);
     for (index, response) in responses.iter().enumerate() {
-        assert!(is_failure_envelope(response), "request {index} must fail: {response}");
-        assert_eq!(response["code"], "invalid-request", "request {index}: {response}");
+        assert!(
+            is_failure_envelope(response),
+            "request {index} must fail: {response}"
+        );
+        assert_eq!(
+            response["code"], "invalid-request",
+            "request {index}: {response}"
+        );
     }
 }
 
@@ -149,8 +163,14 @@ fn atomic_publish_reports_created() {
     ];
     let responses = run_sidecar(&requests);
     assert_eq!(responses[0]["created"], true, "first create-once publishes");
-    assert_eq!(responses[1]["created"], false, "second create-once preserves");
-    assert_eq!(responses[2]["created"], true, "re-publish writes new content");
+    assert_eq!(
+        responses[1]["created"], false,
+        "second create-once preserves"
+    );
+    assert_eq!(
+        responses[2]["created"], true,
+        "re-publish writes new content"
+    );
     assert_eq!(
         fs::read_to_string(base.join("private").join("once.txt")).unwrap(),
         "z",
@@ -172,7 +192,10 @@ fn stable_read_round_trips_content() {
     );
     let responses = run_sidecar(&[request]);
     let response = &responses[0];
-    assert!(!is_failure_envelope(response), "read must succeed: {response}");
+    assert!(
+        !is_failure_envelope(response),
+        "read must succeed: {response}"
+    );
     assert_eq!(response["size"], 7);
     // "payload" in base64.
     assert_eq!(response["contentBase64"], "cGF5bG9hZA==");

@@ -105,7 +105,10 @@ fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
         if ch == '=' {
             break;
         }
-        let value: u32 = BASE64.iter().position(|&c| c == ch as u8).ok_or_else(|| format!("invalid base64 char: {ch}"))? as u32;
+        let value: u32 = BASE64
+            .iter()
+            .position(|&c| c == ch as u8)
+            .ok_or_else(|| format!("invalid base64 char: {ch}"))? as u32;
         bits = (bits << 6) | value;
         bit_count += 6;
         if bit_count >= 8 {
@@ -121,7 +124,10 @@ mod base64_decode {
 }
 
 fn failure(code: &str, message: impl Into<String>) {
-    println!("{}", json!({"ok": false, "code": code, "message": message.into()}));
+    println!(
+        "{}",
+        json!({"ok": false, "code": code, "message": message.into()})
+    );
 }
 
 fn main() {
@@ -159,8 +165,8 @@ fn main() {
 fn dispatch(req: Request) -> Result<serde_json::Value, (String, String)> {
     match req {
         Request::EnsurePrivateDirectory { path } => {
-            let dir = local_custody::ensure_private_directory(&path)
-                .map_err(|e| (e.code, e.message))?;
+            let dir =
+                local_custody::ensure_private_directory(&path).map_err(|e| (e.code, e.message))?;
             Ok(json!({
                 "path": dir.path,
                 "dev": dir.identity.dev,
@@ -221,8 +227,8 @@ fn dispatch(req: Request) -> Result<serde_json::Value, (String, String)> {
                 links: links.or(Some(1)),
                 nonblocking: nonblock.unwrap_or(false),
             };
-            let result = local_custody::stable_read(&path, &options)
-                .map_err(|e| (e.code, e.message))?;
+            let result =
+                local_custody::stable_read(&path, &options).map_err(|e| (e.code, e.message))?;
             Ok(json!({
                 "dev": result.identity.dev,
                 "ino": result.identity.ino,
@@ -236,10 +242,11 @@ fn dispatch(req: Request) -> Result<serde_json::Value, (String, String)> {
             content_base64,
             create_once,
         } => {
-            let content = decode_base64(&content_base64)
-                .map_err(|e| ("invalid-request".to_string(), e))?;
-            let published = local_custody::atomic_publish(&dir, &name, &content, create_once.unwrap_or(false))
-                .map_err(|e| (e.code, e.message))?;
+            let content =
+                decode_base64(&content_base64).map_err(|e| ("invalid-request".to_string(), e))?;
+            let published =
+                local_custody::atomic_publish(&dir, &name, &content, create_once.unwrap_or(false))
+                    .map_err(|e| (e.code, e.message))?;
             Ok(json!({ "path": published.path, "created": published.created }))
         }
         Request::ReadProtectedDescriptor { fd, maximum_bytes } => {
