@@ -190,6 +190,17 @@ fn validate_owner(meta: &fs::Metadata) -> Result<(), CustodyError> {
     Ok(())
 }
 
+/// Files and sockets default to exactly one hard link; directories carry at
+/// least two (`.`, `..`) so they skip the check unless `links` is explicit —
+/// the same default the TypeScript twin applies.
+fn expected_link_count(links: Option<u64>, kind: Option<ObjectKind>) -> Option<u64> {
+    links.or(if matches!(kind, Some(ObjectKind::Directory)) {
+        None
+    } else {
+        Some(1)
+    })
+}
+
 fn validate_link_count(meta: &fs::Metadata, expected: u64) -> Result<(), CustodyError> {
     let nlink = meta.nlink();
     if nlink != expected {
@@ -334,8 +345,9 @@ pub fn assert_owned_path<P: AsRef<Path>>(
 
     validate_mode(&meta, options)?;
 
-    let expected_links = options.links.unwrap_or(1);
-    validate_link_count(&meta, expected_links)?;
+    if let Some(expected_links) = expected_link_count(options.links, options.kind) {
+        validate_link_count(&meta, expected_links)?;
+    }
 
     Ok(identity_of(&meta))
 }
@@ -407,8 +419,9 @@ pub fn assert_owned_fd(
 
     validate_mode(&meta, options)?;
 
-    let expected_links = options.links.unwrap_or(1);
-    validate_link_count(&meta, expected_links)?;
+    if let Some(expected_links) = expected_link_count(options.links, options.kind) {
+        validate_link_count(&meta, expected_links)?;
+    }
 
     Ok(identity_of(&meta))
 }

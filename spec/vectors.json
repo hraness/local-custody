@@ -37,6 +37,18 @@
       "arrange": { "kind": "socket", "mode": "0660" },
       "expect": { "kind": "socket", "exactMode": "0600" },
       "outcome": "reject"
+    },
+    {
+      "name": "directory skips the default single-link expectation",
+      "arrange": { "kind": "directory", "mode": "0700" },
+      "expect": { "kind": "directory", "exactMode": "0700" },
+      "outcome": "accept"
+    },
+    {
+      "name": "directory honors an explicit links expectation",
+      "arrange": { "kind": "directory", "mode": "0700" },
+      "expect": { "kind": "directory", "exactMode": "0700", "links": 1 },
+      "outcome": "reject"
     }
   ],
   "ownedFd": [
@@ -69,6 +81,12 @@
       "arrange": { "kind": "file", "mode": "0600", "bytes": 200 },
       "expect": { "kind": "file", "maximumBytes": 64 },
       "outcome": "reject"
+    },
+    {
+      "name": "directory descriptor skips default link count",
+      "arrange": { "kind": "directory", "mode": "0700" },
+      "expect": { "kind": "directory", "exactMode": "0700" },
+      "outcome": "accept"
     }
   ],
   "privateDirectory": [
