@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Contract tests against `spec/vectors.json`.
 
 use std::fs;
@@ -26,6 +28,8 @@ struct Vectors {
     publish_name: Vec<NameCase>,
     #[serde(rename = "protectedInput")]
     protected_input: Vec<Case>,
+    #[serde(rename = "platformSupport")]
+    platform_support: Vec<Case>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,7 +60,11 @@ fn canonical_temp() -> (TempDir, PathBuf) {
 fn setup_owned_path(dir: &Path, arrange: &serde_json::Value) -> PathBuf {
     let obj = arrange.as_object().unwrap();
     let kind = obj["kind"].as_str().unwrap();
-    let mode = obj.get("mode").and_then(|v| v.as_str()).map(parse_mode).unwrap_or(0o600);
+    let mode = obj
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .map(parse_mode)
+        .unwrap_or(0o600);
     let target_mode = obj
         .get("targetMode")
         .and_then(|v| v.as_str())
@@ -114,8 +122,14 @@ fn options_from_expect(expect: &serde_json::Value) -> OwnedPathOptions {
         "socket" => ObjectKind::Socket,
         _ => panic!("unknown kind {s}"),
     });
-    let exact_mode = obj.get("exactMode").and_then(|v| v.as_str()).map(parse_mode);
-    let owner_only = obj.get("ownerOnly").and_then(|v| v.as_bool()).unwrap_or(false);
+    let exact_mode = obj
+        .get("exactMode")
+        .and_then(|v| v.as_str())
+        .map(parse_mode);
+    let owner_only = obj
+        .get("ownerOnly")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let maximum_bytes = obj.get("maximumBytes").and_then(|v| v.as_u64());
     let minimum_bytes = obj.get("minimumBytes").and_then(|v| v.as_u64());
     let links = obj.get("links").and_then(|v| v.as_u64());
@@ -165,13 +179,10 @@ fn owned_fd_vectors() {
         let path = setup_owned_path(&private, arrange);
         // `canonical` is path-bound and unsupported on a descriptor — the fd
         // vectors always carry it unset.
-        let opts = case
-            .expect
-            .as_ref()
-            .map(|e| OwnedPathOptions {
-                canonical: false,
-                ..options_from_expect(e)
-            });
+        let opts = case.expect.as_ref().map(|e| OwnedPathOptions {
+            canonical: false,
+            ..options_from_expect(e)
+        });
         let opts = opts.unwrap_or(OwnedPathOptions {
             kind: Some(ObjectKind::File),
             ..Default::default()
@@ -230,7 +241,12 @@ fn private_directory_vectors() {
 fn stable_read_vectors() {
     let data: Vectors = serde_json::from_str(include_str!("../../spec/vectors.json")).unwrap();
     for case in data.stable_read {
-        if case.arrange.as_ref().and_then(|v| v.get("mutate")).is_some() {
+        if case
+            .arrange
+            .as_ref()
+            .and_then(|v| v.get("mutate"))
+            .is_some()
+        {
             continue;
         }
         let (_dir, base) = canonical_temp();
@@ -240,12 +256,18 @@ fn stable_read_vectors() {
         let path = setup_owned_path(&private, arrange);
         let expect = case.expect.as_ref().unwrap().as_object().unwrap();
         let opts = StableReadOptions {
-            exact_mode: expect.get("exactMode").and_then(|v| v.as_str()).map(parse_mode),
+            exact_mode: expect
+                .get("exactMode")
+                .and_then(|v| v.as_str())
+                .map(parse_mode),
             owner_only: true,
             maximum_bytes: expect["maximumBytes"].as_u64().unwrap(),
             minimum_bytes: expect.get("minimumBytes").and_then(|v| v.as_u64()),
             links: Some(1),
-            nonblocking: expect.get("nonblock").and_then(|v| v.as_bool()).unwrap_or(false),
+            nonblocking: expect
+                .get("nonblock")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         };
         let result = stable_read(&path, &opts);
         if case.outcome == "returns content plus dev/ino identity" {
@@ -253,7 +275,12 @@ fn stable_read_vectors() {
             let expected = arrange["content"].as_str().unwrap().as_bytes();
             assert_eq!(got.bytes, expected, "{}", case.name);
         } else {
-            assert!(result.is_err(), "{} unexpectedly succeeded: {:?}", case.name, result);
+            assert!(
+                result.is_err(),
+                "{} unexpectedly succeeded: {:?}",
+                case.name,
+                result
+            );
         }
     }
 }
@@ -279,12 +306,15 @@ fn atomic_publish_creates_owner_only_file() {
     let published = atomic_publish(&private, "state.v2.json", b"payload", false).unwrap();
     assert!(published.created);
     assert_eq!(published.path, private.join("state.v2.json"));
-    let result = stable_read(&published.path, &StableReadOptions {
-        owner_only: true,
-        maximum_bytes: 1024,
-        links: Some(1),
-        ..Default::default()
-    })
+    let result = stable_read(
+        &published.path,
+        &StableReadOptions {
+            owner_only: true,
+            maximum_bytes: 1024,
+            links: Some(1),
+            ..Default::default()
+        },
+    )
     .unwrap();
     assert_eq!(result.bytes, b"payload");
 }
@@ -302,7 +332,10 @@ fn protected_input_vectors() {
             }
             let (_dir, base) = canonical_temp();
             let path = setup_owned_path(&base, arrange);
-            let bound = obj.get("bound").and_then(|v| v.as_u64()).map(|n| n as usize);
+            let bound = obj
+                .get("bound")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize);
             let file = fs::File::open(&path).unwrap();
             let result = read_protected_descriptor(file.as_raw_fd(), bound);
             let expect = case.expect.as_ref().unwrap();
@@ -323,3 +356,30 @@ fn protected_input_vectors() {
     }
 }
 
+#[test]
+fn platform_support_vectors_have_exact_failure_codes() {
+    let data: Vectors = serde_json::from_str(include_str!("../../spec/vectors.json")).unwrap();
+    assert_eq!(data.platform_support.len(), 8);
+    let mut unsupported = 0;
+    let mut path = 0;
+    for case in data.platform_support {
+        assert_eq!(
+            case.arrange
+                .as_ref()
+                .and_then(|value| value.get("platform"))
+                .and_then(|value| value.as_str()),
+            Some("windows")
+        );
+        match case
+            .expect
+            .as_ref()
+            .and_then(|value| value.get("code"))
+            .and_then(|value| value.as_str())
+        {
+            Some("unsupported") => unsupported += 1,
+            Some("path") => path += 1,
+            code => panic!("unexpected platform code {code:?}"),
+        }
+    }
+    assert_eq!((unsupported, path), (7, 1));
+}

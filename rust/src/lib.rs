@@ -5,11 +5,22 @@
 //! mechanics, not product semantics.
 
 use std::fmt;
-use std::fs::{self, File, OpenOptions, Permissions};
-use std::io::{Read, Write};
+#[cfg(unix)]
+use std::fs::Permissions;
+use std::fs::{self, File, OpenOptions};
+use std::io::Read;
+#[cfg(unix)]
+use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// An outcome from an owned-path or stable-read check that callers can use to
 /// detect time-of-check/time-of-use replacement.
@@ -86,30 +97,30 @@ impl fmt::Display for CustodyError {
 
 impl std::error::Error for CustodyError {}
 
+#[cfg(unix)]
 fn current_uid() -> Option<u32> {
-    #[cfg(unix)]
-    {
-        Some(unsafe { libc::getuid() })
-    }
-    #[cfg(not(unix))]
-    {
-        None
-    }
+    Some(unsafe { libc::getuid() })
 }
 
+#[cfg(unix)]
 fn is_symbolic_link(path: &Path) -> bool {
     fs::symlink_metadata(path)
-        .map(|m| m.file_type().is_symlink())
+        .map(|meta| meta.file_type().is_symlink())
         .unwrap_or(false)
 }
 
+#[cfg(unix)]
 fn is_root(path: &Path) -> bool {
     path.parent().is_none()
 }
 
+#[cfg(unix)]
 fn realpath_eq(path: &Path) -> Result<PathBuf, CustodyError> {
     let canonical = fs::canonicalize(path).map_err(|e| {
-        CustodyError::new("not-found", format!("cannot canonicalize {}: {e}", path.display()))
+        CustodyError::new(
+            "not-found",
+            format!("cannot canonicalize {}: {e}", path.display()),
+        )
     })?;
     if canonical.as_path() != path {
         return Err(CustodyError::new(
@@ -120,6 +131,7 @@ fn realpath_eq(path: &Path) -> Result<PathBuf, CustodyError> {
     Ok(canonical)
 }
 
+#[cfg(unix)]
 fn identity_of(meta: &fs::Metadata) -> ObjectIdentity {
     ObjectIdentity {
         dev: meta.dev(),
@@ -128,6 +140,7 @@ fn identity_of(meta: &fs::Metadata) -> ObjectIdentity {
     }
 }
 
+#[cfg(unix)]
 fn validate_mode(meta: &fs::Metadata, options: &OwnedPathOptions) -> Result<(), CustodyError> {
     let mode = meta.mode() & 0o777;
     if let Some(exact) = options.exact_mode {
@@ -154,7 +167,10 @@ fn validate_kind(meta: &fs::Metadata, kind: ObjectKind) -> Result<(), CustodyErr
     } else if is_socket(meta) {
         ObjectKind::Socket
     } else {
-        return Err(CustodyError::new("kind", "not a file, directory, or socket"));
+        return Err(CustodyError::new(
+            "kind",
+            "not a file, directory, or socket",
+        ));
     };
     if actual != kind {
         return Err(CustodyError::new(
@@ -165,11 +181,11 @@ fn validate_kind(meta: &fs::Metadata, kind: ObjectKind) -> Result<(), CustodyErr
     Ok(())
 }
 
-fn is_socket(meta: &fs::Metadata) -> bool {
+fn is_socket(_meta: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt;
-        meta.file_type().is_socket()
+        _meta.file_type().is_socket()
     }
     #[cfg(not(unix))]
     {
@@ -177,6 +193,7 @@ fn is_socket(meta: &fs::Metadata) -> bool {
     }
 }
 
+#[cfg(unix)]
 fn validate_owner(meta: &fs::Metadata) -> Result<(), CustodyError> {
     if let Some(uid) = current_uid() {
         let file_uid = meta.uid();
@@ -201,6 +218,7 @@ fn expected_link_count(links: Option<u64>, kind: Option<ObjectKind>) -> Option<u
     })
 }
 
+#[cfg(unix)]
 fn validate_link_count(meta: &fs::Metadata, expected: u64) -> Result<(), CustodyError> {
     let nlink = meta.nlink();
     if nlink != expected {
@@ -221,43 +239,69 @@ pub fn validate_publish_name(name: &str) -> Result<(), CustodyError> {
         return Err(CustodyError::new("empty", "publish name is empty"));
     }
     if name.len() > 128 {
-        return Err(CustodyError::new("too-long", "publish name exceeds 128 bytes"));
+        return Err(CustodyError::new(
+            "too-long",
+            "publish name exceeds 128 bytes",
+        ));
     }
     if name.as_bytes().iter().any(|&b| b.is_ascii_whitespace()) {
-        return Err(CustodyError::new("whitespace", "publish name contains whitespace"));
+        return Err(CustodyError::new(
+            "whitespace",
+            "publish name contains whitespace",
+        ));
     }
     if name.contains('/') || name.contains('\\') {
-        return Err(CustodyError::new("separator", "publish name contains a path separator"));
+        return Err(CustodyError::new(
+            "separator",
+            "publish name contains a path separator",
+        ));
     }
     let mut chars = name.chars();
     let first = chars.next().unwrap();
     if !(first.is_ascii_alphanumeric()) {
-        return Err(CustodyError::new("initial", "publish name must start with alphanumeric"));
+        return Err(CustodyError::new(
+            "initial",
+            "publish name must start with alphanumeric",
+        ));
     }
     if !chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-') {
-        return Err(CustodyError::new("character", "publish name has invalid character"));
+        return Err(CustodyError::new(
+            "character",
+            "publish name has invalid character",
+        ));
     }
     Ok(())
 }
 
+#[cfg(unix)]
 fn ensure_canonical_parent(path: &Path) -> Result<(), CustodyError> {
-    let parent = path.parent().ok_or_else(|| CustodyError::new("root", "path has no parent"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| CustodyError::new("root", "path has no parent"))?;
     if parent.as_os_str().is_empty() {
-        return Err(CustodyError::new("relative", "path is relative without a parent"));
+        return Err(CustodyError::new(
+            "relative",
+            "path is relative without a parent",
+        ));
     }
-    let resolved = parent.canonicalize().map_err(|e| {
-        CustodyError::new("not-found", format!("parent {}: {e}", parent.display()))
-    })?;
+    let resolved = parent
+        .canonicalize()
+        .map_err(|e| CustodyError::new("not-found", format!("parent {}: {e}", parent.display())))?;
     if resolved != parent {
         return Err(CustodyError::new(
             "noncanonical-parent",
-            format!("parent {} resolves to {}", parent.display(), resolved.display()),
+            format!(
+                "parent {} resolves to {}",
+                parent.display(),
+                resolved.display()
+            ),
         ));
     }
     Ok(())
 }
 
 /// Ensure a private directory exists and satisfies the custody contract.
+#[cfg(unix)]
 pub fn ensure_private_directory<P: AsRef<Path>>(path: P) -> Result<PrivateDirectory, CustodyError> {
     let path = path.as_ref();
     if is_root(path) {
@@ -277,14 +321,19 @@ pub fn ensure_private_directory<P: AsRef<Path>>(path: P) -> Result<PrivateDirect
 
     realpath_eq(path)?;
 
-    let meta = fs::symlink_metadata(path).map_err(|e| {
-        CustodyError::new("stat", format!("cannot lstat {}: {e}", path.display()))
-    })?;
+    let meta = fs::symlink_metadata(path)
+        .map_err(|e| CustodyError::new("stat", format!("cannot lstat {}: {e}", path.display())))?;
     if meta.file_type().is_symlink() {
-        return Err(CustodyError::new("symlink", format!("{} is a symlink", path.display())));
+        return Err(CustodyError::new(
+            "symlink",
+            format!("{} is a symlink", path.display()),
+        ));
     }
     if !meta.is_dir() {
-        return Err(CustodyError::new("not-directory", format!("{} is not a directory", path.display())));
+        return Err(CustodyError::new(
+            "not-directory",
+            format!("{} is not a directory", path.display()),
+        ));
     }
     validate_owner(&meta)?;
     let mode = meta.mode() & 0o777;
@@ -301,7 +350,18 @@ pub fn ensure_private_directory<P: AsRef<Path>>(path: P) -> Result<PrivateDirect
     })
 }
 
+#[cfg(not(unix))]
+pub fn ensure_private_directory<P: AsRef<Path>>(
+    _path: P,
+) -> Result<PrivateDirectory, CustodyError> {
+    Err(CustodyError::new(
+        "unsupported",
+        "private-directory custody requires Unix owner and mode semantics",
+    ))
+}
+
 /// Validate an owned path according to `OwnedPathOptions`.
+#[cfg(unix)]
 pub fn assert_owned_path<P: AsRef<Path>>(
     path: P,
     options: &OwnedPathOptions,
@@ -311,13 +371,18 @@ pub fn assert_owned_path<P: AsRef<Path>>(
         realpath_eq(path)?;
     }
     if is_symbolic_link(path) {
-        return Err(CustodyError::new("symlink", format!("{} is a symlink", path.display())));
+        return Err(CustodyError::new(
+            "symlink",
+            format!("{} is a symlink", path.display()),
+        ));
     }
-    let meta = fs::symlink_metadata(path).map_err(|e| {
-        CustodyError::new("stat", format!("cannot lstat {}: {e}", path.display()))
-    })?;
+    let meta = fs::symlink_metadata(path)
+        .map_err(|e| CustodyError::new("stat", format!("cannot lstat {}: {e}", path.display())))?;
     if meta.file_type().is_symlink() {
-        return Err(CustodyError::new("symlink", format!("{} is a symlink", path.display())));
+        return Err(CustodyError::new(
+            "symlink",
+            format!("{} is a symlink", path.display()),
+        ));
     }
     validate_owner(&meta)?;
 
@@ -350,6 +415,199 @@ pub fn assert_owned_path<P: AsRef<Path>>(
     }
 
     Ok(identity_of(&meta))
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct WindowsFileSnapshot {
+    identity: ObjectIdentity,
+    links: u64,
+    attributes: u32,
+    last_write_time: i64,
+    change_time: i64,
+}
+
+#[cfg(windows)]
+fn reject_windows_mode_options(
+    exact_mode: Option<u32>,
+    owner_only: bool,
+) -> Result<(), CustodyError> {
+    if exact_mode.is_some() || owner_only {
+        return Err(CustodyError::new(
+            "unsupported",
+            "owner-only and exact-mode checks require Unix mode semantics",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reject_windows_stream_path(path: &Path) -> Result<(), CustodyError> {
+    use std::os::windows::ffi::OsStrExt;
+    if path.components().any(|component| {
+        matches!(component, std::path::Component::Normal(value) if value.encode_wide().any(|unit| unit == u16::from(b':')))
+    }) {
+        return Err(CustodyError::new(
+            "path",
+            "Windows alternate data streams are unsupported",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_windows_path(path: &Path, read: bool) -> Result<File, CustodyError> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    reject_windows_stream_path(path)?;
+    let mut options = OpenOptions::new();
+    if read {
+        options.read(true);
+    } else {
+        options.access_mode(0);
+    }
+    options
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|e| CustodyError::new("open", format!("cannot open {}: {e}", path.display())))
+}
+
+#[cfg(windows)]
+fn windows_file_snapshot(file: &File, path: &Path) -> Result<WindowsFileSnapshot, CustodyError> {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
+    };
+    let handle = file.as_raw_handle() as HANDLE;
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
+        return Err(CustodyError::new(
+            "stat",
+            format!(
+                "cannot inspect {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    let mut basic = FILE_BASIC_INFO::default();
+    if unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileBasicInfo,
+            (&mut basic as *mut FILE_BASIC_INFO).cast(),
+            std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(CustodyError::new(
+            "stat",
+            format!(
+                "cannot inspect {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || basic.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(CustodyError::new(
+            "symlink",
+            format!("{} is a reparse point", path.display()),
+        ));
+    }
+    let size = (u64::from(information.nFileSizeHigh) << 32) | u64::from(information.nFileSizeLow);
+    Ok(WindowsFileSnapshot {
+        identity: ObjectIdentity {
+            dev: u64::from(information.dwVolumeSerialNumber),
+            ino: (u64::from(information.nFileIndexHigh) << 32)
+                | u64::from(information.nFileIndexLow),
+            size,
+        },
+        links: u64::from(information.nNumberOfLinks),
+        attributes: information.dwFileAttributes,
+        last_write_time: basic.LastWriteTime,
+        change_time: basic.ChangeTime,
+    })
+}
+
+#[cfg(windows)]
+fn windows_path_snapshot(
+    path: &Path,
+) -> Result<(File, fs::Metadata, WindowsFileSnapshot), CustodyError> {
+    let file = open_windows_path(path, false)?;
+    let metadata = file.metadata().map_err(|e| {
+        CustodyError::new("stat", format!("cannot inspect {}: {e}", path.display()))
+    })?;
+    let snapshot = windows_file_snapshot(&file, path)?;
+    Ok((file, metadata, snapshot))
+}
+
+#[cfg(windows)]
+pub fn assert_owned_path<P: AsRef<Path>>(
+    path: P,
+    options: &OwnedPathOptions,
+) -> Result<ObjectIdentity, CustodyError> {
+    let path = path.as_ref();
+    reject_windows_mode_options(options.exact_mode, options.owner_only)?;
+    if matches!(options.kind, Some(ObjectKind::Socket)) {
+        return Err(CustodyError::new(
+            "unsupported",
+            "socket custody requires a Unix platform",
+        ));
+    }
+    if options.canonical {
+        return Err(CustodyError::new(
+            "unsupported",
+            "canonical path equality requires Unix path semantics",
+        ));
+    }
+    let (_file, metadata, snapshot) = windows_path_snapshot(path)?;
+    if let Some(kind) = options.kind {
+        validate_kind(&metadata, kind)?;
+    }
+    let size = snapshot.identity.size;
+    if let Some(maximum) = options.maximum_bytes {
+        if size > maximum {
+            return Err(CustodyError::new(
+                "capacity",
+                format!("size {size} exceeds maximum {maximum}"),
+            ));
+        }
+    }
+    if let Some(minimum) = options.minimum_bytes {
+        if size < minimum {
+            return Err(CustodyError::new(
+                "minimum",
+                format!("size {size} below minimum {minimum}"),
+            ));
+        }
+    }
+    if let Some(expected) = expected_link_count(options.links, options.kind) {
+        if snapshot.links != expected {
+            return Err(CustodyError::new(
+                "links",
+                format!("link count {} != expected {expected}", snapshot.links),
+            ));
+        }
+    }
+    Ok(snapshot.identity)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn assert_owned_path<P: AsRef<Path>>(
+    _path: P,
+    _options: &OwnedPathOptions,
+) -> Result<ObjectIdentity, CustodyError> {
+    Err(CustodyError::new(
+        "unsupported",
+        "owned-path custody is not supported on this platform",
+    ))
 }
 
 /// Validate an already-open descriptor against `OwnedPathOptions`.
@@ -386,13 +644,16 @@ pub fn assert_owned_fd(
     if dup < 0 {
         return Err(CustodyError::new(
             "dup",
-            format!("cannot duplicate descriptor {fd}: {}", std::io::Error::last_os_error()),
+            format!(
+                "cannot duplicate descriptor {fd}: {}",
+                std::io::Error::last_os_error()
+            ),
         ));
     }
     let file = unsafe { File::from_raw_fd(dup) };
-    let meta = file.metadata().map_err(|e| {
-        CustodyError::new("stat", format!("cannot fstat descriptor {fd}: {e}"))
-    })?;
+    let meta = file
+        .metadata()
+        .map_err(|e| CustodyError::new("stat", format!("cannot fstat descriptor {fd}: {e}")))?;
     validate_owner(&meta)?;
 
     let size = meta.size();
@@ -428,7 +689,10 @@ pub fn assert_owned_fd(
 
 /// Validate an already-open descriptor against `OwnedPathOptions`.
 #[cfg(not(unix))]
-pub fn assert_owned_fd(_fd: i32, _options: &OwnedPathOptions) -> Result<ObjectIdentity, CustodyError> {
+pub fn assert_owned_fd(
+    _fd: i32,
+    _options: &OwnedPathOptions,
+) -> Result<ObjectIdentity, CustodyError> {
     Err(CustodyError::new(
         "unsupported",
         "descriptor custody checks require a Unix platform",
@@ -436,13 +700,17 @@ pub fn assert_owned_fd(_fd: i32, _options: &OwnedPathOptions) -> Result<ObjectId
 }
 
 /// Read a regular file with time-of-check/time-of-use guards.
+#[cfg(unix)]
 pub fn stable_read<P: AsRef<Path>>(
     path: P,
     options: &StableReadOptions,
 ) -> Result<StableReadResult, CustodyError> {
     let path = path.as_ref();
     if is_symbolic_link(path) {
-        return Err(CustodyError::new("symlink", format!("{} is a symlink", path.display())));
+        return Err(CustodyError::new(
+            "symlink",
+            format!("{} is a symlink", path.display()),
+        ));
     }
 
     let mut open_flags = libc::O_NOFOLLOW;
@@ -455,14 +723,17 @@ pub fn stable_read<P: AsRef<Path>>(
         .open(path)
         .map_err(|e| CustodyError::new("open", format!("cannot open {}: {e}", path.display())))?;
 
-    let before = file.metadata().map_err(|e| {
-        CustodyError::new("stat", format!("cannot fstat {}: {e}", path.display()))
-    })?;
+    let before = file
+        .metadata()
+        .map_err(|e| CustodyError::new("stat", format!("cannot fstat {}: {e}", path.display())))?;
 
     // Verify the path still resolves to the same object we opened. This catches
     // a replacement that happened immediately after open, before we read.
     let path_before = fs::symlink_metadata(path).map_err(|e| {
-        CustodyError::new("stat", format!("cannot lstat {} after open: {e}", path.display()))
+        CustodyError::new(
+            "stat",
+            format!("cannot lstat {} after open: {e}", path.display()),
+        )
     })?;
     if path_before.file_type().is_symlink()
         || before.dev() != path_before.dev()
@@ -481,7 +752,10 @@ pub fn stable_read<P: AsRef<Path>>(
     }
 
     if !before.is_file() {
-        return Err(CustodyError::new("not-file", format!("{} is not a regular file", path.display())));
+        return Err(CustodyError::new(
+            "not-file",
+            format!("{} is not a regular file", path.display()),
+        ));
     }
     validate_owner(&before)?;
     let size = before.size();
@@ -524,17 +798,26 @@ pub fn stable_read<P: AsRef<Path>>(
         if n == 0 {
             return Err(CustodyError::new(
                 "shrunk",
-                format!("file shrank during read: expected {size}, read {}", bytes.len()),
+                format!(
+                    "file shrank during read: expected {size}, read {}",
+                    bytes.len()
+                ),
             ));
         }
         bytes.extend_from_slice(&buf[..n]);
     }
 
     let after = fs::symlink_metadata(path).map_err(|e| {
-        CustodyError::new("stat", format!("cannot lstat after read {}: {e}", path.display()))
+        CustodyError::new(
+            "stat",
+            format!("cannot lstat after read {}: {e}", path.display()),
+        )
     })?;
     if after.file_type().is_symlink() {
-        return Err(CustodyError::new("symlink", format!("{} became a symlink", path.display())));
+        return Err(CustodyError::new(
+            "symlink",
+            format!("{} became a symlink", path.display()),
+        ));
     }
     if before.dev() != after.dev()
         || before.ino() != after.ino()
@@ -555,6 +838,104 @@ pub fn stable_read<P: AsRef<Path>>(
         bytes,
         identity: identity_of(&after),
     })
+}
+
+#[cfg(windows)]
+pub fn stable_read<P: AsRef<Path>>(
+    path: P,
+    options: &StableReadOptions,
+) -> Result<StableReadResult, CustodyError> {
+    let path = path.as_ref();
+    reject_windows_mode_options(options.exact_mode, options.owner_only)?;
+    if options.nonblocking {
+        return Err(CustodyError::new(
+            "unsupported",
+            "nonblocking stable reads require Unix open flags",
+        ));
+    }
+    let mut file = open_windows_path(path, true)?;
+    let metadata = file.metadata().map_err(|e| {
+        CustodyError::new("stat", format!("cannot inspect {}: {e}", path.display()))
+    })?;
+    let before = windows_file_snapshot(&file, path)?;
+    let (_path_file, path_metadata, path_before) = windows_path_snapshot(path)?;
+    if before != path_before {
+        return Err(CustodyError::new(
+            "changed",
+            format!("{} changed immediately after it was opened", path.display()),
+        ));
+    }
+    if !metadata.is_file() || !path_metadata.is_file() {
+        return Err(CustodyError::new(
+            "not-file",
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    let size = before.identity.size;
+    if size > options.maximum_bytes {
+        return Err(CustodyError::new(
+            "capacity",
+            format!("size {size} exceeds maximum {}", options.maximum_bytes),
+        ));
+    }
+    if let Some(minimum) = options.minimum_bytes {
+        if size < minimum {
+            return Err(CustodyError::new(
+                "minimum",
+                format!("size {size} below minimum {minimum}"),
+            ));
+        }
+    }
+    let expected_links = options.links.unwrap_or(1);
+    if before.links != expected_links {
+        return Err(CustodyError::new(
+            "links",
+            format!("link count {} != expected {expected_links}", before.links),
+        ));
+    }
+    let size_usize = usize::try_from(size)
+        .map_err(|_| CustodyError::new("capacity", "file size exceeds addressable memory"))?;
+    let mut bytes = Vec::with_capacity(size_usize);
+    let mut buffer = [0u8; 64 * 1024];
+    while bytes.len() < size_usize {
+        let want = std::cmp::min(buffer.len(), size_usize - bytes.len());
+        let read = file.read(&mut buffer[..want]).map_err(|e| {
+            CustodyError::new("read", format!("cannot read {}: {e}", path.display()))
+        })?;
+        if read == 0 {
+            return Err(CustodyError::new(
+                "shrunk",
+                format!(
+                    "file shrank during read: expected {size}, read {}",
+                    bytes.len()
+                ),
+            ));
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    let handle_after = windows_file_snapshot(&file, path)?;
+    let (_path_file, path_metadata_after, path_after) = windows_path_snapshot(path)?;
+    if !path_metadata_after.is_file() || before != handle_after || before != path_after {
+        return Err(CustodyError::new(
+            "changed",
+            format!("{} changed while it was read", path.display()),
+        ));
+    }
+    Ok(StableReadResult {
+        bytes,
+        identity: path_after.identity,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn stable_read<P: AsRef<Path>>(
+    _path: P,
+    _options: &StableReadOptions,
+) -> Result<StableReadResult, CustodyError> {
+    Err(CustodyError::new(
+        "unsupported",
+        "stable reads are not supported on this platform",
+    ))
 }
 
 /// The result of a successful [`atomic_publish`]: the published path plus
@@ -613,8 +994,10 @@ type PublishGuard<'a> = &'a dyn Fn(&Path) -> Result<(), CustodyError>;
 
 /// Unique staging name: the counter keeps racing publishers inside one
 /// process from colliding, the pid keeps concurrent processes apart.
+#[cfg(unix)]
 static STAGED_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(unix)]
 fn staged_name(name: &str) -> String {
     let seq = STAGED_NAME_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!(".publish-{name}-{}-{seq}", process_id())
@@ -622,6 +1005,7 @@ fn staged_name(name: &str) -> String {
 
 /// Validate the published object: an owned regular file, mode `0600`, exactly
 /// one hard link.
+#[cfg(unix)]
 fn assert_published_file(target: &Path) -> Result<(), CustodyError> {
     assert_owned_path(
         target,
@@ -638,15 +1022,22 @@ fn assert_published_file(target: &Path) -> Result<(), CustodyError> {
 /// Validate a target that already existed under create-once: it must be an
 /// owned, owner-only regular file. The link count is deliberately unchecked —
 /// a racing publisher's still-linked staging file can transiently raise it.
+#[cfg(unix)]
 fn assert_existing_publish_target(target: &Path) -> Result<(), CustodyError> {
     if is_symbolic_link(target) {
-        return Err(CustodyError::new("symlink", format!("{} is a symlink", target.display())));
+        return Err(CustodyError::new(
+            "symlink",
+            format!("{} is a symlink", target.display()),
+        ));
     }
     let meta = fs::symlink_metadata(target).map_err(|e| {
         CustodyError::new("stat", format!("cannot lstat {}: {e}", target.display()))
     })?;
     if meta.file_type().is_symlink() {
-        return Err(CustodyError::new("symlink", format!("{} is a symlink", target.display())));
+        return Err(CustodyError::new(
+            "symlink",
+            format!("{} is a symlink", target.display()),
+        ));
     }
     validate_kind(&meta, ObjectKind::File)?;
     validate_owner(&meta)?;
@@ -660,15 +1051,17 @@ fn assert_existing_publish_target(target: &Path) -> Result<(), CustodyError> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn fsync_directory(dir: &Path) -> Result<(), CustodyError> {
     let dir_file = File::open(dir).map_err(|e| {
         CustodyError::new("dir-open", format!("cannot open directory for fsync: {e}"))
     })?;
-    dir_file.sync_all().map_err(|e| {
-        CustodyError::new("dir-fsync", format!("cannot fsync directory: {e}"))
-    })
+    dir_file
+        .sync_all()
+        .map_err(|e| CustodyError::new("dir-fsync", format!("cannot fsync directory: {e}")))
 }
 
+#[cfg(unix)]
 fn is_errno(error: &std::io::Error, errno: i32) -> bool {
     error.raw_os_error() == Some(errno)
 }
@@ -677,6 +1070,7 @@ fn is_errno(error: &std::io::Error, errno: i32) -> bool {
 /// `EOPNOTSUPP`, and `ENOTSUP` (distinct on BSDs) cover filesystems that do
 /// not implement hard links at all (vfat, some network filesystems),
 /// `EXDEV` cross-device links, `ENOSYS` a stubbed syscall.
+#[cfg(unix)]
 fn hardlink_unsupported(error: &std::io::Error) -> bool {
     is_errno(error, libc::EPERM)
         || is_errno(error, libc::EOPNOTSUPP)
@@ -688,6 +1082,7 @@ fn hardlink_unsupported(error: &std::io::Error) -> bool {
 /// Commit `tmp_path` to `target` without ever replacing an existing object.
 /// Returns `true` when this call created the target, `false` when the target
 /// already existed (and was preserved untouched).
+#[cfg(unix)]
 fn commit_create_once(tmp_path: &Path, target: &Path) -> Result<bool, CustodyError> {
     match fs::hard_link(tmp_path, target) {
         Ok(()) => {
@@ -763,7 +1158,10 @@ fn rename_noreplace(tmp_path: &Path, target: &Path) -> Result<bool, CustodyError
 
 /// Platforms without an atomic no-clobber rename primitive go straight to
 /// the documented check-then-rename fallback.
-#[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_vendor = "apple"))
+))]
 fn rename_noreplace(tmp_path: &Path, target: &Path) -> Result<bool, CustodyError> {
     fallback_check_then_rename(tmp_path, target)
 }
@@ -797,6 +1195,7 @@ fn rename_noreplace_errno(
 /// between the check and the rename is a documented race — two creators can
 /// both observe a missing target and the later rename replaces the earlier
 /// one — which is why every supported platform tries `link(2)` first.
+#[cfg(unix)]
 fn fallback_check_then_rename(tmp_path: &Path, target: &Path) -> Result<bool, CustodyError> {
     if target.exists() {
         let _ = fs::remove_file(tmp_path);
@@ -814,6 +1213,7 @@ fn fallback_check_then_rename(tmp_path: &Path, target: &Path) -> Result<bool, Cu
     }
 }
 
+#[cfg(unix)]
 fn atomic_publish_inner(
     dir: &Path,
     name: &str,
@@ -896,15 +1296,23 @@ fn atomic_publish_inner(
     })
 }
 
+#[cfg(not(unix))]
+fn atomic_publish_inner(
+    _dir: &Path,
+    _name: &str,
+    _content: &[u8],
+    _create_once: bool,
+    _guard: Option<PublishGuard<'_>>,
+) -> Result<AtomicPublishOutcome, CustodyError> {
+    Err(CustodyError::new(
+        "unsupported",
+        "atomic publication requires Unix owner and mode semantics",
+    ))
+}
+
+#[cfg(unix)]
 fn process_id() -> u32 {
-    #[cfg(unix)]
-    {
-        unsafe { libc::getpid() as u32 }
-    }
-    #[cfg(not(unix))]
-    {
-        0
-    }
+    unsafe { libc::getpid() as u32 }
 }
 
 impl fmt::Debug for ObjectKind {
@@ -927,6 +1335,7 @@ impl fmt::Display for ObjectKind {
 // Protected input
 // -----------------------------------------------------------------------------
 
+#[cfg(unix)]
 const DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES: usize = 65_536;
 
 /// Read a secret from a descriptor that is known to the caller.
@@ -937,7 +1346,11 @@ const DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES: usize = 65_536;
 ///   current user with no group/other access bits.
 /// - Reads at most `maximum_bytes` and fails if more data is available.
 /// - Returns valid UTF-8 or fails closed.
-pub fn read_protected_descriptor(fd: i32, maximum_bytes: Option<usize>) -> Result<String, CustodyError> {
+#[cfg(unix)]
+pub fn read_protected_descriptor(
+    fd: i32,
+    maximum_bytes: Option<usize>,
+) -> Result<String, CustodyError> {
     if fd < 0 {
         return Err(CustodyError::new("invalid", "negative descriptor"));
     }
@@ -956,18 +1369,30 @@ pub fn read_protected_descriptor(fd: i32, maximum_bytes: Option<usize>) -> Resul
         }
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(raw, &mut stat) } != 0 {
-            return Err(CustodyError::new("stat", format!("cannot fstat descriptor {fd}")));
+            return Err(CustodyError::new(
+                "stat",
+                format!("cannot fstat descriptor {fd}"),
+            ));
         }
         if (stat.st_mode & libc::S_IFMT) != libc::S_IFREG {
-            return Err(CustodyError::new("kind", "descriptor is not a regular file"));
+            return Err(CustodyError::new(
+                "kind",
+                "descriptor is not a regular file",
+            ));
         }
         if let Some(uid) = current_uid() {
             if stat.st_uid != uid {
-                return Err(CustodyError::new("owner", "descriptor is not owned by current user"));
+                return Err(CustodyError::new(
+                    "owner",
+                    "descriptor is not owned by current user",
+                ));
             }
         }
         if stat.st_mode & 0o077 != 0 {
-            return Err(CustodyError::new("mode", "descriptor allows group/other access"));
+            return Err(CustodyError::new(
+                "mode",
+                "descriptor allows group/other access",
+            ));
         }
     }
     #[cfg(not(unix))]
@@ -983,7 +1408,10 @@ pub fn read_protected_descriptor(fd: i32, maximum_bytes: Option<usize>) -> Resul
         let mut chunk = vec![0u8; remaining.min(4096)];
         let n = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
         if n < 0 {
-            return Err(CustodyError::new("read", format!("cannot read descriptor {fd}")));
+            return Err(CustodyError::new(
+                "read",
+                format!("cannot read descriptor {fd}"),
+            ));
         }
         if n == 0 {
             break;
@@ -995,11 +1423,28 @@ pub fn read_protected_descriptor(fd: i32, maximum_bytes: Option<usize>) -> Resul
     let mut extra = [0u8; 1];
     let n = unsafe { libc::read(fd, extra.as_mut_ptr().cast(), 1) };
     if n > 0 {
-        return Err(CustodyError::new("limit", format!("input exceeds {maximum_bytes} bytes")));
+        return Err(CustodyError::new(
+            "limit",
+            format!("input exceeds {maximum_bytes} bytes"),
+        ));
     }
     String::from_utf8(buf).map_err(|e| {
-        CustodyError::new("utf8", format!("descriptor content is not valid UTF-8: {e}"))
+        CustodyError::new(
+            "utf8",
+            format!("descriptor content is not valid UTF-8: {e}"),
+        )
     })
+}
+
+#[cfg(not(unix))]
+pub fn read_protected_descriptor(
+    _fd: i32,
+    _maximum_bytes: Option<usize>,
+) -> Result<String, CustodyError> {
+    Err(CustodyError::new(
+        "unsupported",
+        "protected descriptor input requires Unix descriptor custody semantics",
+    ))
 }
 
 pub fn read_protected_stdin(maximum_bytes: Option<usize>) -> Result<String, CustodyError> {
@@ -1040,10 +1485,12 @@ pub struct ControlSocketBounds {
     pub idle_timeout_ms: u64,
 }
 
+#[cfg(unix)]
 fn control_socket_failure_response(reason: ControlSocketFailureReason) -> serde_json::Value {
     serde_json::json!({"ok": false, "code": reason.to_string()})
 }
 
+#[cfg(unix)]
 fn validate_socket_path(socket_path: &Path) -> Result<(), CustodyError> {
     let bytes = socket_path.as_os_str().as_encoded_bytes();
     if bytes.len() > MAXIMUM_SOCKET_PATH_BYTES {
@@ -1052,7 +1499,9 @@ fn validate_socket_path(socket_path: &Path) -> Result<(), CustodyError> {
             format!("socket path exceeds {MAXIMUM_SOCKET_PATH_BYTES} bytes"),
         ));
     }
-    let parent = socket_path.parent().ok_or_else(|| CustodyError::new("root", "socket path has no parent"))?;
+    let parent = socket_path
+        .parent()
+        .ok_or_else(|| CustodyError::new("root", "socket path has no parent"))?;
     ensure_private_directory(parent)?;
     Ok(())
 }
@@ -1095,7 +1544,10 @@ where
         let _ = fs::remove_file(socket_path);
     }
     let listener = UnixListener::bind(socket_path).map_err(|e| {
-        CustodyError::new("bind", format!("cannot bind control socket {}: {e}", socket_path.display()))
+        CustodyError::new(
+            "bind",
+            format!("cannot bind control socket {}: {e}", socket_path.display()),
+        )
     })?;
     let _ = fs::set_permissions(socket_path, Permissions::from_mode(0o600));
     listener
@@ -1130,7 +1582,10 @@ where
             loop {
                 match stream.read_exact(&mut byte) {
                     Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::TimedOut =>
+                    {
                         std::thread::sleep(Duration::from_millis(5));
                         continue;
                     }
@@ -1141,8 +1596,13 @@ where
                 }
                 frame.push(byte[0]);
                 if frame.len() > bounds.maximum_frame_bytes {
-                    let resp = control_socket_failure_response(ControlSocketFailureReason::Capacity);
-                    let _ = writeln!(stream, "{}", serde_json::to_string(&resp).unwrap_or_default());
+                    let resp =
+                        control_socket_failure_response(ControlSocketFailureReason::Capacity);
+                    let _ = writeln!(
+                        stream,
+                        "{}",
+                        serde_json::to_string(&resp).unwrap_or_default()
+                    );
                     break;
                 }
             }
@@ -1150,15 +1610,25 @@ where
                 break;
             }
             if frame.is_empty() {
-                let resp = control_socket_failure_response(ControlSocketFailureReason::InvalidRequest);
-                let _ = writeln!(stream, "{}", serde_json::to_string(&resp).unwrap_or_default());
+                let resp =
+                    control_socket_failure_response(ControlSocketFailureReason::InvalidRequest);
+                let _ = writeln!(
+                    stream,
+                    "{}",
+                    serde_json::to_string(&resp).unwrap_or_default()
+                );
                 break;
             }
             let request: serde_json::Value = match serde_json::from_slice(&frame) {
                 Ok(v) => v,
                 Err(_) => {
-                    let resp = control_socket_failure_response(ControlSocketFailureReason::InvalidRequest);
-                    let _ = writeln!(stream, "{}", serde_json::to_string(&resp).unwrap_or_default());
+                    let resp =
+                        control_socket_failure_response(ControlSocketFailureReason::InvalidRequest);
+                    let _ = writeln!(
+                        stream,
+                        "{}",
+                        serde_json::to_string(&resp).unwrap_or_default()
+                    );
                     break;
                 }
             };
@@ -1168,8 +1638,13 @@ where
             };
             let response_line = serde_json::to_string(&response).unwrap_or_default();
             if response_line.len() > bounds.maximum_response_bytes {
-                let resp = control_socket_failure_response(ControlSocketFailureReason::ResponseLimit);
-                let _ = writeln!(stream, "{}", serde_json::to_string(&resp).unwrap_or_default());
+                let resp =
+                    control_socket_failure_response(ControlSocketFailureReason::ResponseLimit);
+                let _ = writeln!(
+                    stream,
+                    "{}",
+                    serde_json::to_string(&resp).unwrap_or_default()
+                );
             } else {
                 let _ = writeln!(stream, "{response_line}");
             }
@@ -1205,18 +1680,33 @@ pub fn request_control_socket<P: AsRef<Path>>(
         },
     )?;
     const MAXIMUM_REQUEST_LINE_BYTES: usize = 1_000_000;
-    let request_line = serde_json::to_string(request).map_err(|e| CustodyError::new("encode", format!("{e}")))?;
+    let request_line =
+        serde_json::to_string(request).map_err(|e| CustodyError::new("encode", format!("{e}")))?;
     if request_line.len() > MAXIMUM_REQUEST_LINE_BYTES {
-        return Err(CustodyError::new("request-too-long", "request exceeds sanity bound"));
+        return Err(CustodyError::new(
+            "request-too-long",
+            "request exceeds sanity bound",
+        ));
     }
     let timeout = Duration::from_millis(timeout_ms.max(1));
     let mut stream = UnixStream::connect(socket_path).map_err(|e| {
-        CustodyError::new("connect", format!("cannot connect to {}: {e}", socket_path.display()))
+        CustodyError::new(
+            "connect",
+            format!("cannot connect to {}: {e}", socket_path.display()),
+        )
     })?;
-    stream.set_read_timeout(Some(timeout)).map_err(|e| CustodyError::new("timeout", format!("{e}")))?;
-    stream.set_write_timeout(Some(timeout)).map_err(|e| CustodyError::new("timeout", format!("{e}")))?;
-    stream.write_all(request_line.as_bytes()).map_err(|e| CustodyError::new("write", format!("{e}")))?;
-    stream.write_all(b"\n").map_err(|e| CustodyError::new("write", format!("{e}")))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| CustodyError::new("timeout", format!("{e}")))?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|e| CustodyError::new("timeout", format!("{e}")))?;
+    stream
+        .write_all(request_line.as_bytes())
+        .map_err(|e| CustodyError::new("write", format!("{e}")))?;
+    stream
+        .write_all(b"\n")
+        .map_err(|e| CustodyError::new("write", format!("{e}")))?;
     let mut response_line = Vec::with_capacity(maximum_response_bytes + 1);
     let mut byte = [0u8; 1];
     loop {
@@ -1229,7 +1719,10 @@ pub fn request_control_socket<P: AsRef<Path>>(
         }
         response_line.push(byte[0]);
         if response_line.len() > maximum_response_bytes {
-            return Err(CustodyError::new("response-limit", "response exceeds bound"));
+            return Err(CustodyError::new(
+                "response-limit",
+                "response exceeds bound",
+            ));
         }
     }
     serde_json::from_slice(&response_line).map_err(|e| CustodyError::new("json", format!("{e}")))
@@ -1240,9 +1733,12 @@ pub fn listen_control_socket<P, H>(
     _socket_path: P,
     _bounds: &ControlSocketBounds,
     _handler: H,
-    _running: &std::sync::AtomicBool,
+    _running: &AtomicBool,
 ) -> Result<(), CustodyError> {
-    Err(CustodyError::new("unsupported", "Unix control sockets are not supported on this platform"))
+    Err(CustodyError::new(
+        "unsupported",
+        "Unix control sockets are not supported on this platform",
+    ))
 }
 
 #[cfg(not(unix))]
@@ -1252,7 +1748,10 @@ pub fn request_control_socket<P: AsRef<Path>>(
     _maximum_response_bytes: usize,
     _timeout_ms: u64,
 ) -> Result<serde_json::Value, CustodyError> {
-    Err(CustodyError::new("unsupported", "Unix control sockets are not supported on this platform"))
+    Err(CustodyError::new(
+        "unsupported",
+        "Unix control sockets are not supported on this platform",
+    ))
 }
 
 // Ensure unused File drops do not close borrowed descriptors. Re-export via the

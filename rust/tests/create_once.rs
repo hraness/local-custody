@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Commit-path tests: `atomic_publish` create-once is a true no-clobber
 //! `link(2)` commit, and `atomic_publish_guarded` exposes the pre-commit
 //! guard seam a digest compare-and-swap builds on.
@@ -43,7 +45,11 @@ fn create_once_publishes_then_preserves() {
 
     let second = atomic_publish(&private, "once.bin", b"beta", true).unwrap();
     assert!(!second.created, "existing target must report created:false");
-    assert_eq!(fs::read(&second.path).unwrap(), b"alpha", "existing content preserved");
+    assert_eq!(
+        fs::read(&second.path).unwrap(),
+        b"alpha",
+        "existing content preserved"
+    );
     assert_eq!(fs::symlink_metadata(&second.path).unwrap().nlink(), 1);
     // The staging file is always removed — no litter on either path.
     assert_eq!(dir_entries(&private), vec!["once.bin".to_string()]);
@@ -91,7 +97,12 @@ fn create_once_concurrent_publishers_pick_exactly_one_winner() {
             bytes.as_slice() == b"alpha" || bytes.as_slice() == b"beta",
             "round {round}: torn content {bytes:?}",
         );
-        assert_eq!(fs::symlink_metadata(private.join("once.bin")).unwrap().nlink(), 1);
+        assert_eq!(
+            fs::symlink_metadata(private.join("once.bin"))
+                .unwrap()
+                .nlink(),
+            1
+        );
         assert_eq!(
             dir_entries(&private),
             vec!["once.bin".to_string()],
@@ -106,7 +117,9 @@ fn guarded_publish_guard_observes_staged_path_and_content() {
     let seen = std::sync::Mutex::new(Vec::<(PathBuf, Vec<u8>)>::new());
     let guard = |staged: &Path| -> Result<(), CustodyError> {
         // The guard receives the fully-written staging file before commit.
-        seen.lock().unwrap().push((staged.to_path_buf(), fs::read(staged).unwrap()));
+        seen.lock()
+            .unwrap()
+            .push((staged.to_path_buf(), fs::read(staged).unwrap()));
         Ok(())
     };
     let outcome = atomic_publish_guarded(&private, "g.bin", b"payload", &guard).unwrap();
@@ -115,8 +128,15 @@ fn guarded_publish_guard_observes_staged_path_and_content() {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].1, b"payload", "guard sees the final staged content");
-    assert!(seen[0].0.starts_with(&private), "staged file lives in the target dir");
-    assert_ne!(seen[0].0, private.join("g.bin"), "guard gets the staging name");
+    assert!(
+        seen[0].0.starts_with(&private),
+        "staged file lives in the target dir"
+    );
+    assert_ne!(
+        seen[0].0,
+        private.join("g.bin"),
+        "guard gets the staging name"
+    );
     drop(seen);
     assert_eq!(fs::read(private.join("g.bin")).unwrap(), b"payload");
     assert_eq!(dir_entries(&private), vec!["g.bin".to_string()]);
@@ -132,9 +152,18 @@ fn guarded_publish_failure_aborts_and_cleans_up() {
         })
     };
     let err = atomic_publish_guarded(&private, "g.bin", b"payload", &guard).unwrap_err();
-    assert_eq!(err.code, "conflict", "the guard's failure is the publish's failure");
-    assert!(!private.join("g.bin").exists(), "aborted publish leaves no target");
-    assert!(dir_entries(&private).is_empty(), "aborted publish leaves no staging file");
+    assert_eq!(
+        err.code, "conflict",
+        "the guard's failure is the publish's failure"
+    );
+    assert!(
+        !private.join("g.bin").exists(),
+        "aborted publish leaves no target"
+    );
+    assert!(
+        dir_entries(&private).is_empty(),
+        "aborted publish leaves no staging file"
+    );
 }
 
 #[test]
@@ -175,5 +204,9 @@ fn guarded_publish_supports_digest_compare_and_swap() {
     };
     let err = atomic_publish_guarded(&private, "state", b"v3", &reject).unwrap_err();
     assert_eq!(err.code, "conflict");
-    assert_eq!(fs::read(&target).unwrap(), b"v2", "rejected CAS never touches the target");
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        b"v2",
+        "rejected CAS never touches the target"
+    );
 }

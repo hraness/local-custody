@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Descriptor-custody tests: `assert_owned_fd` validates an already-open
 //! descriptor through `fstat`, and `stable_read`'s `nonblocking` option keeps
 //! blocking opens from stalling on special files.

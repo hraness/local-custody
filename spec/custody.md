@@ -13,6 +13,24 @@ The portable contract every implementation proves. Vectors live in
 - **Protected input**: a secret or handoff document read from an open
   descriptor — never argv, environment, or a terminal.
 
+## Platform boundary
+
+Unix implements the complete custody contract. Windows crate support is
+limited groundwork and does not claim equivalent owner-only custody:
+
+- `assert_owned_path` and `stable_read` reject final-component reparse points
+  and alternate data streams, bind identity to the volume serial number and
+  file index obtained from an open handle, and enforce kind, link-count, size,
+  and replacement checks.
+- Windows `assert_owned_path` and `stable_read` return `unsupported` when
+  `exactMode` or `ownerOnly` is requested. `assert_owned_path` also returns
+  `unsupported` for `canonical`, and `stable_read` does so for `nonblocking`.
+- Private-directory creation, atomic publication, owned descriptors, protected
+  descriptors, and control sockets return `unsupported` on Windows until ACL,
+  mode, descriptor, and transport semantics can satisfy the full contract.
+- This crate support does not add a Windows sidecar artifact. Consumers must
+  not activate a Windows Rust engine from cross-compilation evidence alone.
+
 ## Rules
 
 ### Private directory
