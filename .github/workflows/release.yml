@@ -319,8 +319,15 @@ jobs:
           VERSION: ${{ steps.pack.outputs.version }}
         run: |
           set -euo pipefail
-          published="$(npm view "@hraness/local-custody@$VERSION" version)"
-          if [[ "$published" != "$VERSION" ]]; then
-            echo "::error::npm serves $published, expected $VERSION"
-            exit 1
-          fi
+          deadline=$(( $(date +%s) + 900 ))
+          while true; do
+            if published="$(npm view "@hraness/local-custody@$VERSION" version 2>/dev/null)" && [[ "$published" == "$VERSION" ]]; then
+              echo "npm serves $published"
+              break
+            fi
+            if (( $(date +%s) >= deadline )); then
+              echo "::error::npm did not serve $VERSION within 900s of publication"
+              exit 1
+            fi
+            sleep 15
+          done
