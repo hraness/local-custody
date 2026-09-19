@@ -6,8 +6,8 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use local_custody::{
-    atomic_publish, ensure_private_directory, read_protected_descriptor, stable_read,
-    validate_publish_name, ObjectKind, OwnedPathOptions, StableReadOptions,
+    assert_owned_fd, atomic_publish, ensure_private_directory, read_protected_descriptor,
+    stable_read, validate_publish_name, ObjectKind, OwnedPathOptions, StableReadOptions,
 };
 use serde::Deserialize;
 use tempfile::TempDir;
@@ -16,6 +16,8 @@ use tempfile::TempDir;
 struct Vectors {
     #[serde(rename = "ownedPath")]
     owned_path: Vec<Case>,
+    #[serde(rename = "ownedFd")]
+    owned_fd: Vec<Case>,
     #[serde(rename = "privateDirectory")]
     private_directory: Vec<Case>,
     #[serde(rename = "stableRead")]
@@ -93,6 +95,12 @@ fn setup_owned_path(dir: &Path, arrange: &serde_json::Value) -> PathBuf {
             fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
             p
         }
+        "directory" => {
+            let p = dir.join("subdir");
+            fs::create_dir(&p).unwrap();
+            fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+            p
+        }
         _ => panic!("unknown arrange kind: {kind}"),
     };
     path
@@ -138,6 +146,38 @@ fn owned_path_vectors() {
             ..Default::default()
         });
         let result = local_custody::assert_owned_path(&path, &opts);
+        if case.outcome == "accept" {
+            assert!(result.is_ok(), "{} failed: {:?}", case.name, result.err());
+        } else {
+            assert!(result.is_err(), "{} unexpectedly accepted", case.name);
+        }
+    }
+}
+
+#[test]
+fn owned_fd_vectors() {
+    let data: Vectors = serde_json::from_str(include_str!("../../spec/vectors.json")).unwrap();
+    for case in data.owned_fd {
+        let (_dir, base) = canonical_temp();
+        let private = base.join("private");
+        ensure_private_directory(&private).unwrap();
+        let arrange = case.arrange.as_ref().unwrap();
+        let path = setup_owned_path(&private, arrange);
+        // `canonical` is path-bound and unsupported on a descriptor — the fd
+        // vectors always carry it unset.
+        let opts = case
+            .expect
+            .as_ref()
+            .map(|e| OwnedPathOptions {
+                canonical: false,
+                ..options_from_expect(e)
+            });
+        let opts = opts.unwrap_or(OwnedPathOptions {
+            kind: Some(ObjectKind::File),
+            ..Default::default()
+        });
+        let file = fs::File::open(&path).unwrap();
+        let result = assert_owned_fd(file.as_raw_fd(), &opts);
         if case.outcome == "accept" {
             assert!(result.is_ok(), "{} failed: {:?}", case.name, result.err());
         } else {
@@ -205,6 +245,7 @@ fn stable_read_vectors() {
             maximum_bytes: expect["maximumBytes"].as_u64().unwrap(),
             minimum_bytes: expect.get("minimumBytes").and_then(|v| v.as_u64()),
             links: Some(1),
+            nonblocking: expect.get("nonblock").and_then(|v| v.as_bool()).unwrap_or(false),
         };
         let result = stable_read(&path, &opts);
         if case.outcome == "returns content plus dev/ino identity" {

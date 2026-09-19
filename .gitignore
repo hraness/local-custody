@@ -2,6 +2,7 @@ node_modules/
 coverage/
 *.tgz
 .DS_Store
+/target/
 rust/target/
 rust/**/*.node
 /dist/rust-artifacts/

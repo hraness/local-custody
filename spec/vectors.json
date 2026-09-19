@@ -39,6 +39,38 @@
       "outcome": "reject"
     }
   ],
+  "ownedFd": [
+    {
+      "name": "open descriptor within bounds",
+      "arrange": { "kind": "file", "mode": "0600", "bytes": 5 },
+      "expect": { "kind": "file", "exactMode": "0600", "maximumBytes": 16 },
+      "outcome": "accept"
+    },
+    {
+      "name": "group-readable descriptor",
+      "arrange": { "kind": "file", "mode": "0640" },
+      "expect": { "kind": "file", "exactMode": "0600" },
+      "outcome": "reject"
+    },
+    {
+      "name": "hard-linked descriptor",
+      "arrange": { "kind": "file", "mode": "0600", "links": 2 },
+      "expect": { "kind": "file" },
+      "outcome": "reject"
+    },
+    {
+      "name": "directory descriptor where file expected",
+      "arrange": { "kind": "directory", "mode": "0700" },
+      "expect": { "kind": "file" },
+      "outcome": "reject"
+    },
+    {
+      "name": "descriptor above size bound",
+      "arrange": { "kind": "file", "mode": "0600", "bytes": 200 },
+      "expect": { "kind": "file", "maximumBytes": 64 },
+      "outcome": "reject"
+    }
+  ],
   "privateDirectory": [
     {
       "name": "missing directory",
@@ -66,6 +98,12 @@
       "name": "private file read stably",
       "arrange": { "kind": "file", "mode": "0600", "content": "payload" },
       "expect": { "maximumBytes": 64 },
+      "outcome": "returns content plus dev/ino identity"
+    },
+    {
+      "name": "private file read stably through a nonblocking open",
+      "arrange": { "kind": "file", "mode": "0600", "content": "payload" },
+      "expect": { "maximumBytes": 64, "nonblock": true },
       "outcome": "returns content plus dev/ino identity"
     },
     {
@@ -176,6 +214,11 @@
     {
       "name": "stable read returns content",
       "request": { "op": "stable_read", "path": "$TEMP/private/state.json", "maximumBytes": 64 },
+      "expect": { "ok": true, "fields": { "size": 1, "contentBase64": "eA==" } }
+    },
+    {
+      "name": "stable read honors the nonblock request flag",
+      "request": { "op": "stable_read", "path": "$TEMP/private/state.json", "maximumBytes": 64, "nonblock": true },
       "expect": { "ok": true, "fields": { "size": 1, "contentBase64": "eA==" } }
     },
     {
