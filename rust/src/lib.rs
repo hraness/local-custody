@@ -2117,5 +2117,70 @@ pub fn request_control_socket<P: AsRef<Path>>(
     ))
 }
 
+#[cfg(all(test, windows))]
+mod windows_acl_tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::windows::io::FromRawHandle;
+
+    #[test]
+    fn owner_only_file_acl_is_accepted_by_assertion_and_stable_read() {
+        use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
+        };
+        let temporary = tempfile::TempDir::new().unwrap();
+        let path = temporary.path().join("private-file");
+        let descriptor = private_windows_security_descriptor(false).unwrap();
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        let wide = windows_wide_path(&path).unwrap();
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(handle, INVALID_HANDLE_VALUE);
+        let mut file = unsafe { File::from_raw_handle(handle) };
+        file.write_all(b"payload").unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let identity = assert_owned_path(
+            &path,
+            &OwnedPathOptions {
+                kind: Some(ObjectKind::File),
+                owner_only: true,
+                links: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let read = stable_read(
+            &path,
+            &StableReadOptions {
+                owner_only: true,
+                maximum_bytes: 7,
+                minimum_bytes: Some(7),
+                links: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(read.bytes, b"payload");
+        assert_eq!(read.identity, identity);
+    }
+}
+
 // Ensure unused File drops do not close borrowed descriptors. Re-export via the
 // read functions is sufficient; this trait is not public.
