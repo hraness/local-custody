@@ -1,7 +1,9 @@
 #![cfg(windows)]
 
 use std::fs;
+use std::io::Write;
 use std::os::windows::fs::symlink_file;
+use std::process::{Command, Stdio};
 
 use local_custody::{
     assert_owned_fd, assert_owned_path, atomic_publish, ensure_private_directory,
@@ -194,4 +196,58 @@ fn final_component_reparse_points_are_rejected() {
         .code,
         "symlink"
     );
+}
+
+#[test]
+fn sidecar_serves_the_proven_windows_subset() {
+    let temporary = TempDir::new().unwrap();
+    let private = temporary.path().join("private");
+    let readable = temporary.path().join("readable");
+    fs::write(&readable, b"payload").unwrap();
+    let requests = [
+        json!({"op": "ensure_private_directory", "path": private}),
+        json!({
+            "op": "assert_owned_path",
+            "path": private,
+            "kind": "directory",
+            "exactMode": "0700",
+            "ownerOnly": true,
+            "canonical": false
+        }),
+        json!({
+            "op": "stable_read",
+            "path": readable,
+            "ownerOnly": false,
+            "maximumBytes": 64,
+            "links": 1,
+            "nonblock": false
+        }),
+    ];
+    let mut child = Command::new(env!("CARGO_BIN_EXE_local-custody"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        let mut input = child.stdin.take().unwrap();
+        for request in requests {
+            writeln!(input, "{request}").unwrap();
+        }
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let responses: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(responses.len(), 3);
+    assert!(responses[0]["ino"].is_number());
+    assert_eq!(responses[1]["size"], 0);
+    assert_eq!(responses[2]["contentBase64"], "cGF5bG9hZA==");
 }

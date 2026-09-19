@@ -517,7 +517,7 @@ fn reject_windows_stream_path(path: &Path) -> Result<(), CustodyError> {
 fn windows_wide_path(path: &Path) -> Result<Vec<u16>, CustodyError> {
     use std::os::windows::ffi::OsStrExt;
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    if wide.iter().any(|unit| *unit == 0) {
+    if wide.contains(&0) {
         return Err(CustodyError::new("path", "Windows path contains NUL"));
     }
     wide.push(0);

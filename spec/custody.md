@@ -15,21 +15,26 @@ The portable contract every implementation proves. Vectors live in
 
 ## Platform boundary
 
-Unix implements the complete custody contract. Windows crate support is
-limited groundwork and does not claim equivalent owner-only custody:
+Unix implements the complete custody contract. Windows implements the bounded
+path and read subset proven by native CI, without claiming transport or
+publication parity:
 
 - `assert_owned_path` and `stable_read` reject final-component reparse points
   and alternate data streams, bind identity to the volume serial number and
   file index obtained from an open handle, and enforce kind, link-count, size,
   and replacement checks.
-- Windows `assert_owned_path` and `stable_read` return `unsupported` when
-  `exactMode` or `ownerOnly` is requested. `assert_owned_path` also returns
-  `unsupported` for `canonical`, and `stable_read` does so for `nonblocking`.
-- Private-directory creation, atomic publication, owned descriptors, protected
-  descriptors, and control sockets return `unsupported` on Windows until ACL,
-  mode, descriptor, and transport semantics can satisfy the full contract.
-- This crate support does not add a Windows sidecar artifact. Consumers must
-  not activate a Windows Rust engine from cross-compilation evidence alone.
+- Windows `ownerOnly`, exact file mode `0600`, and exact directory mode `0700`
+  mean one protected, non-inherited DACL containing one full-control ACE for
+  the current user SID, with that SID also owning the object. Other exact modes
+  return `unsupported` rather than approximating Unix permission bits.
+- `ensure_private_directory` creates the final directory with that descriptor
+  in the creation call, rejects every reparse point in the existing ancestor
+  chain, and revalidates owner, DACL, kind, and handle identity after creation.
+- Windows `assert_owned_path` returns `unsupported` for `canonical`, and
+  `stable_read` does so for `nonblocking`. Atomic publication, owned and
+  protected descriptors, and control sockets remain `unsupported`.
+- Native CI executes this subset on Windows, but no Windows sidecar artifact is
+  published or activated downstream yet.
 
 ## Rules
 

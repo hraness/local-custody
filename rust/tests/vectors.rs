@@ -357,9 +357,10 @@ fn protected_input_vectors() {
 }
 
 #[test]
-fn platform_support_vectors_have_exact_failure_codes() {
+fn platform_support_vectors_have_exact_outcomes() {
     let data: Vectors = serde_json::from_str(include_str!("../../spec/vectors.json")).unwrap();
-    assert_eq!(data.platform_support.len(), 8);
+    assert_eq!(data.platform_support.len(), 9);
+    let mut accepted = 0;
     let mut unsupported = 0;
     let mut path = 0;
     for case in data.platform_support {
@@ -370,16 +371,20 @@ fn platform_support_vectors_have_exact_failure_codes() {
                 .and_then(|value| value.as_str()),
             Some("windows")
         );
-        match case
-            .expect
-            .as_ref()
-            .and_then(|value| value.get("code"))
+        let expect = case.expect.as_ref().unwrap();
+        if expect
+            .get("outcome")
             .and_then(|value| value.as_str())
+            .is_some()
         {
+            accepted += 1;
+            continue;
+        }
+        match expect.get("code").and_then(|value| value.as_str()) {
             Some("unsupported") => unsupported += 1,
             Some("path") => path += 1,
             code => panic!("unexpected platform code {code:?}"),
         }
     }
-    assert_eq!((unsupported, path), (7, 1));
+    assert_eq!((accepted, unsupported, path), (3, 5, 1));
 }
