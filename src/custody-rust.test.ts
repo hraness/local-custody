@@ -25,14 +25,14 @@ async function ensureSidecarPath(): Promise<string> {
     return defaultPath;
   } catch {
     // Build a native sidecar for the current host so tests can exercise it.
-    const root = import.meta.dir.endsWith("/src") || import.meta.dir.endsWith("\\src")
-      ? join(import.meta.dir, "..", "rust")
-      : join(import.meta.dir, "..", "rust");
-    const result = await $`cd ${root} && cargo build --release`.quiet();
+    const rustDir = join(import.meta.dir, "..", "rust");
+    const result = await $`cd ${rustDir} && cargo build --release`.quiet();
     if (result.exitCode !== 0) {
       throw new Error(`Failed to build local-custody sidecar for tests: ${result.stderr.toString()}`);
     }
-    const nativePath = join(root, "target", "release", "local-custody");
+    // The cargo workspace lives at the repository root, so `target/` resolves
+    // one level above the `rust/` member directory.
+    const nativePath = join(rustDir, "..", "target", "release", "local-custody");
     await stat(nativePath);
     return nativePath;
   }

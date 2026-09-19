@@ -62,6 +62,22 @@ development or out-of-band sidecar delivery). Rebuild the host artifact with
 `bun run rust:build:artifacts`; `bun run rust:build:manifest` regenerates the
 manifest for staged targets.
 
+### Rust crate
+
+The `local-custody` crate in `rust/` is a standalone library implementation
+of the same contract — owned-path and owned-descriptor (`fstat`) validation,
+stable bounded reads (with an `O_NONBLOCK` open option), link-based
+no-clobber create-once, and a commit-guarded atomic publish. A virtual
+workspace at the repository root makes it consumable as a cargo git
+dependency pinned to a reviewed commit:
+
+```toml
+local-custody = { git = "https://github.com/hraness/local-custody", rev = "<sha>" }
+```
+
+Descriptor custody and the commit guard are process-local and intentionally
+absent from the sidecar protocol — see `spec/custody.md`.
+
 ## Install
 
 ```sh

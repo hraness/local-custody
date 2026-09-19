@@ -26,7 +26,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          workspaces: rust
+          # The cargo workspace lives at the repository root (rust/ is a
+          # member); target output and Cargo.lock resolve there.
+          workspaces: .
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run check
       - run: |

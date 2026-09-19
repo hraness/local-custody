@@ -8,7 +8,8 @@
 - `src/rust-fallback.ts` owns the bounded, sanitized fallback notices emitted when an engine path falls back to TypeScript.
 - `src/artifact-manifest.ts` owns the typed reader for `dist/rust-artifacts/manifest.json`.
 - `src/*.test.ts` and `src/*.property.test.ts` own deterministic regressions and arbitrary-input laws.
-- `rust/` owns the Rust port: the `local-custody` library, the JSON-lines sidecar binary, and its contract tests.
+- `rust/` owns the Rust port: the `local-custody` library (owned-path and owned-descriptor validation, stable reads, link-based create-once and guarded atomic publish), the JSON-lines sidecar binary, and its contract tests.
+- The root `Cargo.toml` virtual workspace makes the crate consumable as a cargo git dependency; `Cargo.lock` and all `target/` output resolve at the repository root.
 - `spec/custody.md` and `spec/vectors.json` own the portable contract every implementation — TypeScript and Rust — must reproduce.
 - `scripts/` owns the ESM build, absolute-root determinism check, canonical portfolio inventory, clean packed-consumer smoke, and Rust sidecar staging plus artifact-manifest generation.
 - `.github/workflows/` owns read-only branch validation, checks-gated immutable GitHub Release automation, and the tag-only `npm-release` environment's OIDC trusted-publishing mirror.

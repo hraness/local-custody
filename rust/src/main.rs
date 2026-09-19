@@ -9,13 +9,16 @@
 //!    "exactMode":"0600","ownerOnly":true,"maximumBytes":N,"minimumBytes":N,
 //!    "links":N,"canonical":true}`
 //! - `{"op":"stable_read","path":"...","exactMode":"0600","maximumBytes":N,
-//!    "minimumBytes":N}`
+//!    "minimumBytes":N,"nonblock":true}`
 //! - `{"op":"atomic_publish","dir":"...","name":"...","contentBase64":"...",
 //!    "createOnce":false}`
 //! - `{"op":"read_protected_descriptor","fd":N,"maximumBytes":N}`
 //! - `{"op":"read_protected_stdin","maximumBytes":N}`
 //! - `{"op":"control_socket_request","socketPath":"...","request":{...},
 //!    "maximumResponseBytes":N,"timeoutMs":N}`
+//!
+//! `assert_owned_fd` and guarded publish are library-only: descriptor passing
+//! and in-process commit guards cannot cross the sidecar's process boundary.
 
 use std::io::{self, BufRead, Write};
 
@@ -55,6 +58,7 @@ enum Request {
         #[serde(rename = "minimumBytes")]
         minimum_bytes: Option<u64>,
         links: Option<u64>,
+        nonblock: Option<bool>,
     },
     #[serde(rename = "atomic_publish")]
     AtomicPublish {
@@ -204,6 +208,7 @@ fn dispatch(req: Request) -> Result<serde_json::Value, (String, String)> {
             maximum_bytes,
             minimum_bytes,
             links,
+            nonblock,
         } => {
             let exact_mode = exact_mode
                 .map(|s| parse_mode(&s).map_err(|e| ("invalid-request".to_string(), e)))
@@ -214,6 +219,7 @@ fn dispatch(req: Request) -> Result<serde_json::Value, (String, String)> {
                 maximum_bytes,
                 minimum_bytes,
                 links: links.or(Some(1)),
+                nonblocking: nonblock.unwrap_or(false),
             };
             let result = local_custody::stable_read(&path, &options)
                 .map_err(|e| (e.code, e.message))?;

@@ -39,10 +39,23 @@ The portable contract every implementation proves. Vectors live in
    callers can detect replacement across a time-of-check/time-of-use gap and
    build byte-bearing custody evidence.
 
+### Owned descriptor
+
+An already-open descriptor can be validated the same way with `fstat` —
+the check for files whose bytes or metadata change constantly, where any
+path re-resolution would race. Every owned-path rule applies except the
+two that need a path: a descriptor can never be a symbolic link, and
+`canonical` cannot be proven, so requesting `canonical` fails closed. The
+descriptor is borrowed for the duration of the check — never closed, never
+modified — and returns the same `dev`/`ino` identity.
+
 ### Stable read
 
 1. `open` the path `O_RDONLY | O_NOFOLLOW` — a symbolic link can never be
-   opened through this contract.
+   opened through this contract. Implementations may also accept a
+   `nonblocking` request that adds `O_NONBLOCK` so a FIFO or other
+   blocking-kind path fails fast instead of stalling the open; regular
+   files are unaffected.
 2. `fstat` the descriptor: it must be a regular file, owned by the current
    uid where one exists, within the byte bound, and with exactly one hard
    link unless `links` says otherwise.
@@ -66,11 +79,23 @@ The portable contract every implementation proves. Vectors live in
    deterministic under any umask.
 3. `fsync` the file, close it, run the caller's optional commit guard —
    a throwing guard aborts the publish — `rename` over the target, `fsync`
-   the directory.
+   the directory. The guard is the compare-and-swap seam: it observes the
+   fully durable staged object (the Rust `atomic_publish_guarded` passes
+   the staging path, the TypeScript `beforeCommit` receives the target
+   path) and must not block indefinitely.
 4. Re-validate the published name as an owned file: mode `0600`, one link.
 5. On any failure, best-effort unlink the temporary; never leave it behind.
-6. Create-once publication links the staged file to the target instead of
-   renaming: an existing name is preserved and reported, never replaced.
+6. Create-once publication commits with `link(2)` instead of `rename`: the
+   staged file is hard-linked to the target so an existing name fails the
+   commit atomically with `EEXIST` — existence check and commit are one
+   step, with no check-then-act window. The preserved object is validated
+   (kind, owner, `0600` — not link count, which a racing winner's staging
+   link can transiently raise) and reported `created: false`.
+7. Where a filesystem has no hard links, create-once falls back to an
+   atomic no-clobber rename — `renameat2(RENAME_NOREPLACE)` on Linux and
+   Android, `renameatx_np(RENAME_EXCL)` on Apple platforms — and only to a
+   documented check-then-rename where neither primitive exists; that last
+   resort keeps the preserve-existing contract but not the race guarantee.
 
 ### Control socket
 
@@ -129,7 +154,8 @@ behind a newline-delimited JSON protocol on stdio.
    `assert_owned_path` `{path, kind, exactMode, ownerOnly, maximumBytes,
    minimumBytes, links, canonical}` → `{dev, ino, size}`;
    `stable_read` `{path, exactMode, ownerOnly, maximumBytes, minimumBytes,
-   links}` → `{dev, ino, size, contentBase64}`;
+   links, nonblock}` → `{dev, ino, size, contentBase64}` — `nonblock: true`
+   opens with `O_NONBLOCK` so a blocking-kind path fails fast;
    `atomic_publish` `{dir, name, contentBase64, createOnce}` →
    `{path, created}` where `created` is `false` only when `createOnce`
    preserved a pre-existing target;
@@ -149,6 +175,12 @@ behind a newline-delimited JSON protocol on stdio.
 6. Every input stays bounded: request lines, response payloads, and read
    bounds come from the caller's declared limits; loaders add their own
    byte and deadline ceilings on top.
+7. Library-only surfaces stay off the wire: `assert_owned_fd` needs an
+   open descriptor in the caller's own table, and `atomic_publish_guarded`
+   runs an in-process commit guard — neither crosses the process boundary,
+   so there is no `assert_owned_fd` or guarded-publish op. Engines route
+   `beforeCommit` publishes to the in-process implementation for the same
+   reason.
 
 ### Execution flavor
 

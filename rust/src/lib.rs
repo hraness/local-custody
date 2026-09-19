@@ -9,7 +9,7 @@ use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// An outcome from an owned-path or stable-read check that callers can use to
 /// detect time-of-check/time-of-use replacement.
@@ -45,6 +45,10 @@ pub struct StableReadOptions {
     pub maximum_bytes: u64,
     pub minimum_bytes: Option<u64>,
     pub links: Option<u64>,
+    /// Open with `O_NONBLOCK` alongside `O_NOFOLLOW`: a FIFO (or other object
+    /// whose open blocks) fails fast instead of stalling the caller. Regular
+    /// files are unaffected — `O_NONBLOCK` is ignored for them.
+    pub nonblocking: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -336,6 +340,88 @@ pub fn assert_owned_path<P: AsRef<Path>>(
     Ok(identity_of(&meta))
 }
 
+/// Validate an already-open descriptor against `OwnedPathOptions`.
+///
+/// `assert_owned_path` resolves and `lstat`s a path; callers holding an open
+/// descriptor — for example a constantly-changing WAL sibling whose metadata
+/// would never survive a path re-check — instead validate the descriptor
+/// itself with `fstat`. Path-bound checks do not apply: an open descriptor
+/// cannot be a symbolic link, and `canonical` cannot be proven without a
+/// path, so requesting `canonical` fails closed as `unsupported`. Ownership,
+/// kind, mode, link-count, and size checks match `assert_owned_path` exactly.
+///
+/// The descriptor is borrowed, never owned: it is not closed and its flags
+/// are not modified. Callers must pass a descriptor that stays open for the
+/// duration of the call.
+#[cfg(unix)]
+pub fn assert_owned_fd(
+    fd: std::os::unix::io::RawFd,
+    options: &OwnedPathOptions,
+) -> Result<ObjectIdentity, CustodyError> {
+    use std::os::unix::io::FromRawFd;
+    if fd < 0 {
+        return Err(CustodyError::new("invalid", "negative descriptor"));
+    }
+    if options.canonical {
+        return Err(CustodyError::new(
+            "unsupported",
+            "canonical checks require a path; an open descriptor has none",
+        ));
+    }
+    // Duplicate the descriptor (F_DUPFD_CLOEXEC): the `File` owns only the
+    // duplicate, so dropping it never closes the caller's descriptor.
+    let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC) };
+    if dup < 0 {
+        return Err(CustodyError::new(
+            "dup",
+            format!("cannot duplicate descriptor {fd}: {}", std::io::Error::last_os_error()),
+        ));
+    }
+    let file = unsafe { File::from_raw_fd(dup) };
+    let meta = file.metadata().map_err(|e| {
+        CustodyError::new("stat", format!("cannot fstat descriptor {fd}: {e}"))
+    })?;
+    validate_owner(&meta)?;
+
+    let size = meta.size();
+    if let Some(max) = options.maximum_bytes {
+        if size > max {
+            return Err(CustodyError::new(
+                "capacity",
+                format!("size {size} exceeds maximum {max}"),
+            ));
+        }
+    }
+    if let Some(min) = options.minimum_bytes {
+        if size < min {
+            return Err(CustodyError::new(
+                "minimum",
+                format!("size {size} below minimum {min}"),
+            ));
+        }
+    }
+
+    if let Some(kind) = options.kind {
+        validate_kind(&meta, kind)?;
+    }
+
+    validate_mode(&meta, options)?;
+
+    let expected_links = options.links.unwrap_or(1);
+    validate_link_count(&meta, expected_links)?;
+
+    Ok(identity_of(&meta))
+}
+
+/// Validate an already-open descriptor against `OwnedPathOptions`.
+#[cfg(not(unix))]
+pub fn assert_owned_fd(_fd: i32, _options: &OwnedPathOptions) -> Result<ObjectIdentity, CustodyError> {
+    Err(CustodyError::new(
+        "unsupported",
+        "descriptor custody checks require a Unix platform",
+    ))
+}
+
 /// Read a regular file with time-of-check/time-of-use guards.
 pub fn stable_read<P: AsRef<Path>>(
     path: P,
@@ -346,9 +432,13 @@ pub fn stable_read<P: AsRef<Path>>(
         return Err(CustodyError::new("symlink", format!("{} is a symlink", path.display())));
     }
 
+    let mut open_flags = libc::O_NOFOLLOW;
+    if options.nonblocking {
+        open_flags |= libc::O_NONBLOCK;
+    }
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(open_flags)
         .open(path)
         .map_err(|e| CustodyError::new("open", format!("cannot open {}: {e}", path.display())))?;
 
@@ -466,44 +556,282 @@ pub struct AtomicPublishOutcome {
 
 /// Atomically publish `content` as `name` inside `dir`.
 ///
-/// If `create_once` is true and the target already exists, the existing file is
-/// preserved and reported with `created: false`.
+/// When `create_once` is false the staged file is `rename(2)`d over the
+/// target atomically. When `create_once` is true the commit is a true
+/// no-clobber create: the staged file is `link(2)`ed to the target so an
+/// existing name fails the commit with `EEXIST` — existence check and commit
+/// are one atomic step, closing the check-then-act window a plain
+/// `exists()` + `rename()` sequence leaves open. The preserved object is
+/// validated and reported with `created: false`.
+///
+/// Filesystems without hard-link support fall back to an atomic no-clobber
+/// rename (`renameat2`/`renameatx_np`) where the platform offers one, then —
+/// only where neither primitive exists — to a documented check-then-rename.
 pub fn atomic_publish<P: AsRef<Path>>(
     dir: P,
     name: &str,
     content: &[u8],
     create_once: bool,
 ) -> Result<AtomicPublishOutcome, CustodyError> {
-    let dir = dir.as_ref();
+    atomic_publish_inner(dir.as_ref(), name, content, create_once, None)
+}
+
+/// [`atomic_publish`] with a commit guard — the seam a digest
+/// compare-and-swap needs.
+///
+/// `guard` runs after the staged file is fully written and fsynced but
+/// before it is committed over the target, and it receives the staged
+/// temporary path so it can re-verify exactly what is about to be published
+/// (the caller knows `dir` and `name`, so the current target stays
+/// reachable through the closure). A failed guard aborts the publish and
+/// removes the staging file; the target is never touched. This mirrors the
+/// TypeScript `beforeCommit` option's timing and abort semantics.
+pub fn atomic_publish_guarded<P: AsRef<Path>>(
+    dir: P,
+    name: &str,
+    content: &[u8],
+    guard: &dyn Fn(&Path) -> Result<(), CustodyError>,
+) -> Result<AtomicPublishOutcome, CustodyError> {
+    atomic_publish_inner(dir.as_ref(), name, content, false, Some(guard))
+}
+
+/// The commit-guard shape [`atomic_publish_guarded`] accepts.
+type PublishGuard<'a> = &'a dyn Fn(&Path) -> Result<(), CustodyError>;
+
+/// Unique staging name: the counter keeps racing publishers inside one
+/// process from colliding, the pid keeps concurrent processes apart.
+static STAGED_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn staged_name(name: &str) -> String {
+    let seq = STAGED_NAME_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(".publish-{name}-{}-{seq}", process_id())
+}
+
+/// Validate the published object: an owned regular file, mode `0600`, exactly
+/// one hard link.
+fn assert_published_file(target: &Path) -> Result<(), CustodyError> {
+    assert_owned_path(
+        target,
+        &OwnedPathOptions {
+            kind: Some(ObjectKind::File),
+            exact_mode: Some(0o600),
+            links: Some(1),
+            ..Default::default()
+        },
+    )?;
+    Ok(())
+}
+
+/// Validate a target that already existed under create-once: it must be an
+/// owned, owner-only regular file. The link count is deliberately unchecked —
+/// a racing publisher's still-linked staging file can transiently raise it.
+fn assert_existing_publish_target(target: &Path) -> Result<(), CustodyError> {
+    if is_symbolic_link(target) {
+        return Err(CustodyError::new("symlink", format!("{} is a symlink", target.display())));
+    }
+    let meta = fs::symlink_metadata(target).map_err(|e| {
+        CustodyError::new("stat", format!("cannot lstat {}: {e}", target.display()))
+    })?;
+    if meta.file_type().is_symlink() {
+        return Err(CustodyError::new("symlink", format!("{} is a symlink", target.display())));
+    }
+    validate_kind(&meta, ObjectKind::File)?;
+    validate_owner(&meta)?;
+    let mode = meta.mode() & 0o777;
+    if mode != 0o600 {
+        return Err(CustodyError::new(
+            "mode-mismatch",
+            format!("mode {mode:04o} != expected 0600"),
+        ));
+    }
+    Ok(())
+}
+
+fn fsync_directory(dir: &Path) -> Result<(), CustodyError> {
+    let dir_file = File::open(dir).map_err(|e| {
+        CustodyError::new("dir-open", format!("cannot open directory for fsync: {e}"))
+    })?;
+    dir_file.sync_all().map_err(|e| {
+        CustodyError::new("dir-fsync", format!("cannot fsync directory: {e}"))
+    })
+}
+
+fn is_errno(error: &std::io::Error, errno: i32) -> bool {
+    error.raw_os_error() == Some(errno)
+}
+
+/// Errors a filesystem returns when `link(2)` is unavailable: `EPERM`,
+/// `EOPNOTSUPP`, and `ENOTSUP` (distinct on BSDs) cover filesystems that do
+/// not implement hard links at all (vfat, some network filesystems),
+/// `EXDEV` cross-device links, `ENOSYS` a stubbed syscall.
+fn hardlink_unsupported(error: &std::io::Error) -> bool {
+    is_errno(error, libc::EPERM)
+        || is_errno(error, libc::EOPNOTSUPP)
+        || is_errno(error, libc::ENOTSUP)
+        || is_errno(error, libc::EXDEV)
+        || is_errno(error, libc::ENOSYS)
+}
+
+/// Commit `tmp_path` to `target` without ever replacing an existing object.
+/// Returns `true` when this call created the target, `false` when the target
+/// already existed (and was preserved untouched).
+fn commit_create_once(tmp_path: &Path, target: &Path) -> Result<bool, CustodyError> {
+    match fs::hard_link(tmp_path, target) {
+        Ok(()) => {
+            // The staged name is best-effort cleanup; the target now carries
+            // the staged inode and drops to one link once it is removed.
+            let _ = fs::remove_file(tmp_path);
+            Ok(true)
+        }
+        Err(e) if is_errno(&e, libc::EEXIST) => {
+            let _ = fs::remove_file(tmp_path);
+            Ok(false)
+        }
+        Err(e) if hardlink_unsupported(&e) => rename_noreplace(tmp_path, target),
+        Err(e) => {
+            let _ = fs::remove_file(tmp_path);
+            Err(CustodyError::new(
+                "link",
+                format!("cannot link staged file to {}: {e}", target.display()),
+            ))
+        }
+    }
+}
+
+/// Atomic no-clobber rename for filesystems without hard links: Linux and
+/// Android expose `renameat2(RENAME_NOREPLACE)`, Apple platforms expose
+/// `renameatx_np(RENAME_EXCL)`. Both keep the staged file absent from the
+/// target when a name already exists.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn rename_noreplace(tmp_path: &Path, target: &Path) -> Result<bool, CustodyError> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let old = CString::new(tmp_path.as_os_str().as_bytes())
+        .map_err(|_| CustodyError::new("path", "staged path contains NUL"))?;
+    let new = CString::new(target.as_os_str().as_bytes())
+        .map_err(|_| CustodyError::new("path", "target path contains NUL"))?;
+    let rc = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            old.as_ptr(),
+            libc::AT_FDCWD,
+            new.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if rc == 0 {
+        return Ok(true);
+    }
+    rename_noreplace_errno(tmp_path, target, std::io::Error::last_os_error())
+}
+
+#[cfg(target_vendor = "apple")]
+fn rename_noreplace(tmp_path: &Path, target: &Path) -> Result<bool, CustodyError> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let old = CString::new(tmp_path.as_os_str().as_bytes())
+        .map_err(|_| CustodyError::new("path", "staged path contains NUL"))?;
+    let new = CString::new(target.as_os_str().as_bytes())
+        .map_err(|_| CustodyError::new("path", "target path contains NUL"))?;
+    let rc = unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            old.as_ptr(),
+            libc::AT_FDCWD,
+            new.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if rc == 0 {
+        return Ok(true);
+    }
+    rename_noreplace_errno(tmp_path, target, std::io::Error::last_os_error())
+}
+
+/// Platforms without an atomic no-clobber rename primitive go straight to
+/// the documented check-then-rename fallback.
+#[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+fn rename_noreplace(tmp_path: &Path, target: &Path) -> Result<bool, CustodyError> {
+    fallback_check_then_rename(tmp_path, target)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+fn rename_noreplace_errno(
+    tmp_path: &Path,
+    target: &Path,
+    error: std::io::Error,
+) -> Result<bool, CustodyError> {
+    match error.raw_os_error() {
+        Some(libc::EEXIST) => {
+            // The staged file was not moved; remove it like a failed link.
+            let _ = fs::remove_file(tmp_path);
+            Ok(false)
+        }
+        // Kernel without the syscall/flag support: last resort below.
+        Some(libc::ENOSYS) | Some(libc::EINVAL) => fallback_check_then_rename(tmp_path, target),
+        _ => {
+            let _ = fs::remove_file(tmp_path);
+            Err(CustodyError::new(
+                "rename",
+                format!("cannot no-clobber rename staged file: {error}"),
+            ))
+        }
+    }
+}
+
+/// Last resort for filesystems offering neither hard links nor an atomic
+/// no-clobber rename: an existence check followed by `rename(2)`. The window
+/// between the check and the rename is a documented race — two creators can
+/// both observe a missing target and the later rename replaces the earlier
+/// one — which is why every supported platform tries `link(2)` first.
+fn fallback_check_then_rename(tmp_path: &Path, target: &Path) -> Result<bool, CustodyError> {
+    if target.exists() {
+        let _ = fs::remove_file(tmp_path);
+        return Ok(false);
+    }
+    match fs::rename(tmp_path, target) {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            let _ = fs::remove_file(tmp_path);
+            Err(CustodyError::new(
+                "rename",
+                format!("cannot publish staged file: {e}"),
+            ))
+        }
+    }
+}
+
+fn atomic_publish_inner(
+    dir: &Path,
+    name: &str,
+    content: &[u8],
+    create_once: bool,
+    guard: Option<PublishGuard<'_>>,
+) -> Result<AtomicPublishOutcome, CustodyError> {
     validate_publish_name(name)?;
     ensure_private_directory(dir)?;
 
     let target = dir.join(name);
+    // Fast path: no-clobber cannot succeed against an existing name; skip the
+    // staging work entirely. `link(2)` remains the authoritative check.
     if create_once && target.exists() {
-        assert_owned_path(
-            &target,
-            &OwnedPathOptions {
-                kind: Some(ObjectKind::File),
-                exact_mode: Some(0o600),
-                links: Some(1),
-                ..Default::default()
-            },
-        )?;
+        assert_existing_publish_target(&target)?;
         return Ok(AtomicPublishOutcome {
             path: target,
             created: false,
         });
     }
 
-    let tmp_name = format!(".publish-{name}-{}", process_id());
-    let tmp_path = dir.join(&tmp_name);
+    let tmp_path = dir.join(staged_name(name));
 
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&tmp_path)
-        .map_err(|e| CustodyError::new("stage", format!("cannot stage {tmp_name}: {e}")))?;
+        .map_err(|e| {
+            CustodyError::new("stage", format!("cannot stage {}: {e}", tmp_path.display()))
+        })?;
 
     file.write_all(content).map_err(|e| {
         let _ = fs::remove_file(&tmp_path);
@@ -515,27 +843,39 @@ pub fn atomic_publish<P: AsRef<Path>>(
     })?;
     drop(file);
 
+    // Commit guard seam: runs with the staged file fully durable and before
+    // the commit step (link or rename). A failed guard aborts and cleans up.
+    if let Some(guard) = guard {
+        if let Err(error) = guard(&tmp_path) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+    }
+
+    if create_once {
+        let created = commit_create_once(&tmp_path, &target)?;
+        fsync_directory(dir)?;
+        if !created {
+            assert_existing_publish_target(&target)?;
+            return Ok(AtomicPublishOutcome {
+                path: target,
+                created: false,
+            });
+        }
+        assert_published_file(&target)?;
+        return Ok(AtomicPublishOutcome {
+            path: target,
+            created: true,
+        });
+    }
+
     fs::rename(&tmp_path, &target).map_err(|e| {
         let _ = fs::remove_file(&tmp_path);
         CustodyError::new("rename", format!("cannot publish {name}: {e}"))
     })?;
 
-    let dir_file = File::open(dir).map_err(|e| {
-        CustodyError::new("dir-open", format!("cannot open directory for fsync: {e}"))
-    })?;
-    dir_file.sync_all().map_err(|e| {
-        CustodyError::new("dir-fsync", format!("cannot fsync directory: {e}"))
-    })?;
-
-    assert_owned_path(
-        &target,
-        &OwnedPathOptions {
-            kind: Some(ObjectKind::File),
-            exact_mode: Some(0o600),
-            links: Some(1),
-            ..Default::default()
-        },
-    )?;
+    fsync_directory(dir)?;
+    assert_published_file(&target)?;
 
     Ok(AtomicPublishOutcome {
         path: target,
@@ -723,7 +1063,6 @@ where
     H: Fn(serde_json::Value) -> Result<serde_json::Value, ControlSocketFailureReason>,
 {
     use std::os::unix::net::UnixListener;
-    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     let socket_path = socket_path.as_ref();

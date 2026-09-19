@@ -33,7 +33,7 @@ const CRATE = "local-custody";
 
 async function copyCargoNative() {
   const { platform, arch, triple } = hostPlatformArch();
-  const source = resolve(root, "rust", "target", triple, "release", CRATE);
+  const source = resolve(root, "target", triple, "release", CRATE);
   const target = resolve(outDir, CRATE, `${platform}-${arch}`);
   await mkdir(target, { recursive: true });
   const dest = resolve(target, CRATE);
