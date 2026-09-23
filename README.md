@@ -2,13 +2,13 @@
 
 Keep a CLI's private files, local control socket, and secret input out of reach of other users on the same machine.
 
-Each Hraness product CLI used to write its own version of these checks. This
-package provides them once: private directories and owner-only path checks,
-atomic writes of private files, a newline-delimited JSON control socket with
-size and time limits, and secrets read from an open file descriptor. Your CLI
-still owns its credentials, state, and changes; the package checks where and
-how they are stored and passed. Unix systems get every check. Windows gets the
-path, read, and private-directory checks only (see [Windows](#windows)).
+The package provides private directories and owner-only path checks, atomic
+writes of private files, a newline-delimited JSON control socket with size and
+time limits, and secrets read from an open file descriptor. Your CLI still owns
+its credentials, state, and changes; the package checks where and how they are
+stored and passed. Every check is supported on Unix. On Windows, the Rust crate
+supports only the path, read, and private-directory checks, and the TypeScript
+package skips owner checks (see [Windows](#windows)).
 
 ## Install
 
@@ -80,13 +80,15 @@ The `local-custody` crate in `rust/` is a standalone library that implements
 the same rules: owned-path and owned-descriptor (`fstat`) checks, stable
 size-limited reads (with an `O_NONBLOCK` open option), create-once writes
 that commit with a hard link so an existing file is never replaced, and
-atomic publish with a commit guard. A
-virtual workspace at the repository root lets you use it as a Cargo git
-dependency pinned to a reviewed commit:
+atomic publish with a commit guard. A virtual workspace at the repository
+root lets you use it as a Cargo git dependency pinned to a reviewed commit:
 
 ```toml
 local-custody = { git = "https://github.com/hraness/local-custody", rev = "<sha>" }
 ```
+
+Descriptor checks and the commit guard work within one process, so the
+sidecar protocol does not include them. See `spec/custody.md`.
 
 ### Windows
 
@@ -96,9 +98,6 @@ private-directory creation, and the matching sidecar wire operations. Windows
 atomic publication, descriptor checks, nonblocking opens, canonical path
 equality, and control sockets are unsupported. The package does not publish
 or select a Windows sidecar.
-
-Descriptor checks and the commit guard work within one process, so the
-sidecar protocol does not include them. See `spec/custody.md`.
 
 ## Development
 
