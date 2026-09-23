@@ -1,7 +1,7 @@
 {
   "name": "@hraness/local-custody",
   "version": "0.6.0",
-  "description": "Owner-only local custody primitives for Hraness product CLIs.",
+  "description": "Owner-only files, atomic private writes, a local JSON control socket, and file-descriptor secret input for Hraness product CLIs.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,

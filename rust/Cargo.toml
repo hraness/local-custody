@@ -3,7 +3,7 @@ name = "local-custody"
 version = "0.6.0"
 edition = "2021"
 license = "MIT"
-description = "Rust port of the local-custody filesystem-custody contract."
+description = "Owner-only path checks, stable private reads, and atomic private file writes for Rust CLIs."
 repository = "https://github.com/hraness/local-custody"
 rust-version = "1.85"
 
