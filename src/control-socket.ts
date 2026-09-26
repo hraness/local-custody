@@ -9,6 +9,24 @@ import {
   type OwnedPathIdentity,
 } from "./private-paths.js";
 
+/** Why a control request failed; `describeCustodyError` turns it into plain words. */
+export type ControlSocketErrorCode =
+  | "control-unavailable"
+  | "control-closed"
+  | "control-timeout"
+  | "control-invalid-response"
+  | "control-response-too-large"
+  | "control-extra-output"
+  | "control-identity-changed";
+
+/** A control request failure with a stable `code`. Messages are unchanged from earlier releases. */
+export class ControlSocketError extends Error {
+  override readonly name = "ControlSocketError";
+  constructor(readonly code: ControlSocketErrorCode, message: string) {
+    super(message);
+  }
+}
+
 /** `sockaddr_un.sun_path` is 104 bytes on supported platforms; stay under it. */
 export const MAXIMUM_SOCKET_PATH_BYTES = 100;
 const DEFAULT_MAXIMUM_CONNECTIONS = 16;
@@ -331,8 +349,17 @@ export async function requestControlSocket<T>(
   if (frame.length > maximumRequestBytes) {
     throw new Error("Control request exceeds its frame limit.");
   }
-  await assertOwnedPath(dirname(socketPath), { kind: "directory", canonical: true });
-  const before = await socketIdentity(socketPath);
+  let before: OwnedPathIdentity;
+  try {
+    await assertOwnedPath(dirname(socketPath), { kind: "directory", canonical: true });
+    before = await socketIdentity(socketPath);
+  } catch (error) {
+    // No socket (or no directory) means nothing is listening.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new ControlSocketError("control-unavailable", "The control socket is unavailable.");
+    }
+    throw error;
+  }
   return new Promise<T>((resolvePromise, rejectPromise) => {
     const socket = connect(socketPath);
     let buffer = Buffer.alloc(0);
@@ -346,12 +373,12 @@ export async function requestControlSocket<T>(
       else resolvePromise(value as T);
     };
     const timer = setTimeout(
-      () => settle(new Error("Control request timed out.")),
+      () => settle(new ControlSocketError("control-timeout", "Control request timed out.")),
       timeoutMs,
     );
     socket.once("connect", () => {
       void socketIdentity(socketPath).then((after) => {
-        if (!sameIdentity(before, after)) throw new Error("Control socket identity changed.");
+        if (!sameIdentity(before, after)) throw new ControlSocketError("control-identity-changed", "Control socket identity changed.");
         if (!settled) socket.write(frame);
       }).catch((error: unknown) =>
         settle(error instanceof Error ? error : new Error("Control socket changed.")));
@@ -359,13 +386,13 @@ export async function requestControlSocket<T>(
     socket.on("data", (chunk) => {
       buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
       if (buffer.length > maximumResponseBytes) {
-        settle(new Error("Control response exceeds its frame limit."));
+        settle(new ControlSocketError("control-response-too-large", "Control response exceeds its frame limit."));
         return;
       }
       const newline = buffer.indexOf(0x0a);
       if (newline < 0) return;
       if (newline !== buffer.length - 1) {
-        settle(new Error("Unexpected additional control output."));
+        settle(new ControlSocketError("control-extra-output", "Unexpected additional control output."));
         return;
       }
       try {
@@ -374,12 +401,12 @@ export async function requestControlSocket<T>(
         );
         settle(null, options.parseResponse(value));
       } catch {
-        settle(new Error("Invalid control response."));
+        settle(new ControlSocketError("control-invalid-response", "Invalid control response."));
       }
     });
-    socket.once("error", () => settle(new Error("The control socket is unavailable.")));
+    socket.once("error", () => settle(new ControlSocketError("control-unavailable", "The control socket is unavailable.")));
     socket.once("close", () => {
-      if (!settled) settle(new Error("The control socket closed without a response."));
+      if (!settled) settle(new ControlSocketError("control-closed", "The control socket closed without a response."));
     });
   });
 }

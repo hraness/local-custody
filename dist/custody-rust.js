@@ -278,6 +278,14 @@ function createPrivateFileOnceSync(directory, name, content) {
 import { chmod, unlink as unlink2 } from "node:fs/promises";
 import { createServer, connect } from "node:net";
 import { dirname as dirname2 } from "node:path";
+class ControlSocketError extends Error {
+  code;
+  name = "ControlSocketError";
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
 var MAXIMUM_SOCKET_PATH_BYTES = 100;
 var DEFAULT_MAXIMUM_CONNECTIONS = 16;
 var DEFAULT_HEADER_TIMEOUT_MS = 5000;
@@ -506,8 +514,16 @@ async function requestControlSocket(options) {
   if (frame.length > maximumRequestBytes) {
     throw new Error("Control request exceeds its frame limit.");
   }
-  await assertOwnedPath(dirname2(socketPath), { kind: "directory", canonical: true });
-  const before = await socketIdentity(socketPath);
+  let before;
+  try {
+    await assertOwnedPath(dirname2(socketPath), { kind: "directory", canonical: true });
+    before = await socketIdentity(socketPath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new ControlSocketError("control-unavailable", "The control socket is unavailable.");
+    }
+    throw error;
+  }
   return new Promise((resolvePromise, rejectPromise) => {
     const socket = connect(socketPath);
     let buffer = Buffer.alloc(0);
@@ -523,11 +539,11 @@ async function requestControlSocket(options) {
       else
         resolvePromise(value);
     };
-    const timer = setTimeout(() => settle(new Error("Control request timed out.")), timeoutMs);
+    const timer = setTimeout(() => settle(new ControlSocketError("control-timeout", "Control request timed out.")), timeoutMs);
     socket.once("connect", () => {
       socketIdentity(socketPath).then((after) => {
         if (!sameIdentity(before, after))
-          throw new Error("Control socket identity changed.");
+          throw new ControlSocketError("control-identity-changed", "Control socket identity changed.");
         if (!settled)
           socket.write(frame);
       }).catch((error) => settle(error instanceof Error ? error : new Error("Control socket changed.")));
@@ -535,27 +551,27 @@ async function requestControlSocket(options) {
     socket.on("data", (chunk) => {
       buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
       if (buffer.length > maximumResponseBytes) {
-        settle(new Error("Control response exceeds its frame limit."));
+        settle(new ControlSocketError("control-response-too-large", "Control response exceeds its frame limit."));
         return;
       }
       const newline = buffer.indexOf(10);
       if (newline < 0)
         return;
       if (newline !== buffer.length - 1) {
-        settle(new Error("Unexpected additional control output."));
+        settle(new ControlSocketError("control-extra-output", "Unexpected additional control output."));
         return;
       }
       try {
         const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, newline)));
         settle(null, options.parseResponse(value));
       } catch {
-        settle(new Error("Invalid control response."));
+        settle(new ControlSocketError("control-invalid-response", "Invalid control response."));
       }
     });
-    socket.once("error", () => settle(new Error("The control socket is unavailable.")));
+    socket.once("error", () => settle(new ControlSocketError("control-unavailable", "The control socket is unavailable.")));
     socket.once("close", () => {
       if (!settled)
-        settle(new Error("The control socket closed without a response."));
+        settle(new ControlSocketError("control-closed", "The control socket closed without a response."));
     });
   });
 }
@@ -564,6 +580,16 @@ async function requestControlSocket(options) {
 import { fstatSync as fstatSync2, readSync as readSync2 } from "node:fs";
 import { isatty } from "node:tty";
 var DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES = 65536;
+
+class ProtectedInputError extends Error {
+  code;
+  name = "ProtectedInputError";
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+var PROTECTED_INPUT_TERMINAL_MESSAGE = "Pipe the value in instead of typing it, for example: pbpaste | <command> --stdin. " + "Typing secrets into the terminal is off to keep them out of your scrollback.";
 function readProtectedDescriptor(descriptor, options = {}) {
   const maximumBytes = options.maximumBytes ?? DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES;
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
@@ -573,13 +599,13 @@ function readProtectedDescriptor(descriptor, options = {}) {
     throw new Error("Protected input requires a valid descriptor.");
   }
   if (isatty(descriptor)) {
-    throw new Error("Protected input does not read terminals.");
+    throw new ProtectedInputError("protected-terminal", PROTECTED_INPUT_TERMINAL_MESSAGE);
   }
   const metadata = fstatSync2(descriptor, { bigint: true });
   if (metadata.isFile()) {
     const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
     if (uid !== undefined && metadata.uid !== BigInt(uid) || (metadata.mode & 0o077n) !== 0n) {
-      throw new Error("Protected input file must be owned and private.");
+      throw new ProtectedInputError("protected-unsafe-file", "Protected input file must be owned and private.");
     }
   }
   const buffer = Buffer.alloc(maximumBytes + 1);
@@ -590,9 +616,9 @@ function readProtectedDescriptor(descriptor, options = {}) {
       break;
     offset += read;
     if (offset > maximumBytes)
-      throw new Error("Protected input exceeds its size bound.");
+      throw new ProtectedInputError("protected-too-large", "Protected input exceeds its size bound.");
     if (offset === buffer.length)
-      throw new Error("Protected input exceeds its size bound.");
+      throw new ProtectedInputError("protected-too-large", "Protected input exceeds its size bound.");
   }
   return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, offset));
 }
