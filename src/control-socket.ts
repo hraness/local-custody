@@ -22,8 +22,8 @@ export type ControlSocketErrorCode =
 /** A control request failure with a stable `code`. Messages are unchanged from earlier releases. */
 export class ControlSocketError extends Error {
   override readonly name = "ControlSocketError";
-  constructor(readonly code: ControlSocketErrorCode, message: string) {
-    super(message);
+  constructor(readonly code: ControlSocketErrorCode, message: string, options?: Readonly<{ cause?: unknown }>) {
+    super(message, options);
   }
 }
 
@@ -356,7 +356,7 @@ export async function requestControlSocket<T>(
   } catch (error) {
     // No socket (or no directory) means nothing is listening.
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new ControlSocketError("control-unavailable", "The control socket is unavailable.");
+      throw new ControlSocketError("control-unavailable", "The control socket is unavailable.", { cause: error });
     }
     throw error;
   }

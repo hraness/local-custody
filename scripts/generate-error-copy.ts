@@ -4,16 +4,16 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { CUSTODY_ERROR_CODES, CUSTODY_ERROR_COPY } from "../src/describe.ts";
-import { PROTECTED_INPUT_TERMINAL_MESSAGE } from "../src/protected-input.ts";
+import { CUSTODY_ACTIVITY_CODES, CUSTODY_ERROR_CODES, CUSTODY_ERROR_COPY } from "../src/describe.ts";
 
 const output = resolve(import.meta.dir, "..", "rust", "src", "error-copy.json");
 const sorted = <T>(record: Readonly<Record<string, T>>): Record<string, T> =>
   Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]!]));
 const text = `${JSON.stringify({
-  terminalMessage: PROTECTED_INPUT_TERMINAL_MESSAGE,
   copy: sorted(CUSTODY_ERROR_COPY),
   codes: sorted(CUSTODY_ERROR_CODES),
+  activityCodes: Object.fromEntries(Object.keys(CUSTODY_ACTIVITY_CODES).sort().map((activity) =>
+    [activity, sorted(CUSTODY_ACTIVITY_CODES[activity as keyof typeof CUSTODY_ACTIVITY_CODES])])),
 }, null, 2)}\n`;
 
 if (process.argv.includes("--check")) {

@@ -281,8 +281,8 @@ import { dirname as dirname2 } from "node:path";
 class ControlSocketError extends Error {
   code;
   name = "ControlSocketError";
-  constructor(code, message) {
-    super(message);
+  constructor(code, message, options) {
+    super(message, options);
     this.code = code;
   }
 }
@@ -520,7 +520,7 @@ async function requestControlSocket(options) {
     before = await socketIdentity(socketPath);
   } catch (error) {
     if (error.code === "ENOENT") {
-      throw new ControlSocketError("control-unavailable", "The control socket is unavailable.");
+      throw new ControlSocketError("control-unavailable", "The control socket is unavailable.", { cause: error });
     }
     throw error;
   }
@@ -589,7 +589,7 @@ class ProtectedInputError extends Error {
     this.code = code;
   }
 }
-var PROTECTED_INPUT_TERMINAL_MESSAGE = "Pipe the value in instead of typing it, for example: pbpaste | <command> --stdin. " + "Typing secrets into the terminal is off to keep them out of your scrollback.";
+var PROTECTED_INPUT_TERMINAL_MESSAGE = "Pipe or redirect the value in instead of typing it, so it stays out of your terminal history.";
 function readProtectedDescriptor(descriptor, options = {}) {
   const maximumBytes = options.maximumBytes ?? DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES;
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
@@ -640,8 +640,8 @@ var CUSTODY_ERROR_COPY = Object.freeze({
     next: "{command} doctor"
   }),
   "terminal-input": Object.freeze({
-    message: "{product} reads this value from a pipe, not from typing, so it stays out of your terminal history.",
-    next: "pbpaste | {inputCommand}"
+    message: "{product} doesn't read this value from typing, so it stays out of your terminal history.",
+    next: "{inputExample}"
   }),
   "unsafe-permissions": Object.freeze({
     message: "{product} stopped because its private files can be read by other users or aren't owned by you.",
@@ -676,6 +676,8 @@ var CUSTODY_ERROR_CODES = Object.freeze({
   "control-response-too-large": "service-unexpected",
   "control-extra-output": "service-unexpected",
   "control-identity-changed": "service-unexpected",
+  connect: "service-not-running",
+  "response-limit": "service-unexpected",
   tty: "terminal-input",
   "protected-terminal": "terminal-input",
   "protected-unsafe-file": "unsafe-permissions",
@@ -705,6 +707,21 @@ var CUSTODY_ERROR_CODES = Object.freeze({
   "sidecar-timeout": "helper-unavailable",
   "sidecar-protocol": "helper-unavailable"
 });
+var CUSTODY_ACTIVITY_CODES = Object.freeze({
+  control: Object.freeze({
+    "not-found": "service-not-running",
+    stat: "service-not-running",
+    write: "service-not-running",
+    read: "service-timeout",
+    timeout: "service-timeout",
+    json: "service-unexpected"
+  }),
+  input: Object.freeze({
+    limit: "input-too-large",
+    capacity: "input-too-large"
+  }),
+  files: Object.freeze({})
+});
 var MESSAGES = Object.freeze({
   "Directory must be physical, owned, and private.": "unsafe-permissions",
   "Directory parent must be physical.": "unsafe-permissions",
@@ -720,16 +737,25 @@ var SIDECAR_ERRORS = Object.freeze({
   CustodySidecarTimeoutError: "sidecar-timeout",
   CustodySidecarProtocolError: "sidecar-protocol"
 });
-function problemOf(error) {
+function problemOfCode(code, during) {
+  const contextual = during === undefined ? undefined : CUSTODY_ACTIVITY_CODES[during];
+  if (contextual !== undefined && Object.hasOwn(contextual, code))
+    return contextual[code];
+  return Object.hasOwn(CUSTODY_ERROR_CODES, code) ? CUSTODY_ERROR_CODES[code] : undefined;
+}
+function problemOf(error, during) {
   if (typeof error === "string")
-    return CUSTODY_ERROR_CODES[error] ?? "unexpected";
+    return problemOfCode(error, during) ?? "unexpected";
   if (error === null || typeof error !== "object")
     return "unexpected";
   const { code, name, message } = error;
   if (typeof name === "string" && Object.hasOwn(SIDECAR_ERRORS, name))
     return CUSTODY_ERROR_CODES[SIDECAR_ERRORS[name]];
-  if (typeof code === "string" && Object.hasOwn(CUSTODY_ERROR_CODES, code))
-    return CUSTODY_ERROR_CODES[code];
+  if (typeof code === "string") {
+    const problem = problemOfCode(code, during);
+    if (problem !== undefined)
+      return problem;
+  }
   if (typeof message === "string" && Object.hasOwn(MESSAGES, message))
     return MESSAGES[message];
   return "unexpected";
@@ -738,16 +764,17 @@ function plain(value) {
   return value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 200);
 }
 function describeCustodyError(error, options) {
-  const problem = problemOf(error);
+  const problem = problemOf(error, options.during);
   const product = plain(options.product);
   const command = plain(options.command);
+  const inputCommand = options.inputCommand === undefined ? command : plain(options.inputCommand);
   const values = {
     product,
     command,
     startCommand: options.startCommand === undefined ? `${command} doctor` : plain(options.startCommand),
-    inputCommand: options.inputCommand === undefined ? `${command} …` : plain(options.inputCommand)
+    inputExample: options.inputExample === undefined ? `Pipe or redirect the value into ${inputCommand}.` : plain(options.inputExample)
   };
-  const fill = (template) => template.replace(/\{(product|command|startCommand|inputCommand)\}/gu, (_, key) => values[key]);
+  const fill = (template) => template.replace(/\{(product|command|startCommand|inputExample)\}/gu, (_, key) => values[key]);
   const copy = CUSTODY_ERROR_COPY[problem];
   return Object.freeze({ problem, message: fill(copy.message), next: fill(copy.next) });
 }
@@ -775,5 +802,6 @@ export {
   DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES,
   ControlSocketError,
   CUSTODY_ERROR_COPY,
-  CUSTODY_ERROR_CODES
+  CUSTODY_ERROR_CODES,
+  CUSTODY_ACTIVITY_CODES
 };

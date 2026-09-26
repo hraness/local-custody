@@ -141,8 +141,8 @@ import { dirname as dirname2 } from "node:path";
 class ControlSocketError extends Error {
   code;
   name = "ControlSocketError";
-  constructor(code, message) {
-    super(message);
+  constructor(code, message, options) {
+    super(message, options);
     this.code = code;
   }
 }
@@ -380,7 +380,7 @@ async function requestControlSocket(options) {
     before = await socketIdentity(socketPath);
   } catch (error) {
     if (error.code === "ENOENT") {
-      throw new ControlSocketError("control-unavailable", "The control socket is unavailable.");
+      throw new ControlSocketError("control-unavailable", "The control socket is unavailable.", { cause: error });
     }
     throw error;
   }

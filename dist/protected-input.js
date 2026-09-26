@@ -11,7 +11,7 @@ class ProtectedInputError extends Error {
     this.code = code;
   }
 }
-var PROTECTED_INPUT_TERMINAL_MESSAGE = "Pipe the value in instead of typing it, for example: pbpaste | <command> --stdin. " + "Typing secrets into the terminal is off to keep them out of your scrollback.";
+var PROTECTED_INPUT_TERMINAL_MESSAGE = "Pipe or redirect the value in instead of typing it, so it stays out of your terminal history.";
 function readProtectedDescriptor(descriptor, options = {}) {
   const maximumBytes = options.maximumBytes ?? DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES;
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {

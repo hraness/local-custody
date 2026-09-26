@@ -15,8 +15,7 @@ export class ProtectedInputError extends Error {
 
 /** The terminal refusal, written for the person who ran the command. */
 export const PROTECTED_INPUT_TERMINAL_MESSAGE =
-  "Pipe the value in instead of typing it, for example: pbpaste | <command> --stdin. "
-  + "Typing secrets into the terminal is off to keep them out of your scrollback.";
+  "Pipe or redirect the value in instead of typing it, so it stays out of your terminal history.";
 
 /**
  * Read a secret or handoff document from an already-open descriptor —

@@ -17,11 +17,24 @@ fn copy() -> &'static Value {
     })
 }
 
-/// The message a terminal refusal carries, written for the person who ran the command.
-pub fn terminal_input_message() -> &'static str {
-    copy()["terminalMessage"]
-        .as_str()
-        .expect("generated terminal message")
+/// What the product was doing. Rust errors use generic codes (`read`,
+/// `not-found`, `json`), so the same code means a stopped service during a
+/// control request and a file problem elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activity {
+    Control,
+    Input,
+    Files,
+}
+
+impl Activity {
+    fn key(self) -> &'static str {
+        match self {
+            Activity::Control => "control",
+            Activity::Input => "input",
+            Activity::Files => "files",
+        }
+    }
 }
 
 /// Names and commands used to fill the copy.
@@ -35,6 +48,12 @@ pub struct DescribeOptions<'a> {
     pub start_command: Option<&'a str>,
     /// The full command that reads protected input, such as `ghostget login --stdin`.
     pub input_command: Option<&'a str>,
+    /// A complete example that feeds the value in, such as
+    /// `ghostget login --stdin < token.txt`. It replaces the default next step
+    /// for terminal input.
+    pub input_example: Option<&'a str>,
+    /// What the product was doing when the error happened.
+    pub during: Option<Activity>,
 }
 
 /// One sentence saying what happened and one next step.
@@ -67,16 +86,22 @@ fn plain(value: &str) -> String {
 /// Unknown codes are described as unexpected. Internal details, paths and
 /// codes never appear in the text.
 pub fn describe_error(code: &str, options: &DescribeOptions<'_>) -> ErrorDescription {
-    let problem = copy()["codes"][code].as_str().unwrap_or("unexpected");
+    let problem = options
+        .during
+        .and_then(|activity| copy()["activityCodes"][activity.key()][code].as_str())
+        .or_else(|| copy()["codes"][code].as_str())
+        .unwrap_or("unexpected");
     let entry = &copy()["copy"][problem];
     let product = plain(options.product);
     let command = plain(options.command);
     let start = options
         .start_command
         .map_or_else(|| format!("{command} doctor"), plain);
-    let input = options
-        .input_command
-        .map_or_else(|| format!("{command} …"), plain);
+    let input_command = options.input_command.map_or_else(|| command.clone(), plain);
+    let input = options.input_example.map_or_else(
+        || format!("Pipe or redirect the value into {input_command}."),
+        plain,
+    );
     let fill = |template: &str| {
         // Placeholders are filled in one pass so a name can never introduce another placeholder.
         let mut out = String::with_capacity(template.len());
@@ -88,7 +113,7 @@ pub fn describe_error(code: &str, options: &DescribeOptions<'_>) -> ErrorDescrip
                 ("{product}", product.as_str()),
                 ("{command}", command.as_str()),
                 ("{startCommand}", start.as_str()),
-                ("{inputCommand}", input.as_str()),
+                ("{inputExample}", input.as_str()),
             ]
             .iter()
             .find(|(name, _)| tail.starts_with(name))

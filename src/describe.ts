@@ -27,6 +27,13 @@ export type CustodyDescription = Readonly<{
   next: string;
 }>;
 
+/**
+ * What the product was doing. Rust errors use generic codes (`read`,
+ * `not-found`, `json`), so the same code means a stopped service during a
+ * control request and a file problem elsewhere.
+ */
+export type CustodyActivity = "control" | "input" | "files";
+
 export type DescribeCustodyOptions = Readonly<{
   /** The product's display name, such as `Textbutler`. */
   product: string;
@@ -36,12 +43,21 @@ export type DescribeCustodyOptions = Readonly<{
   startCommand?: string;
   /** The full command that reads protected input, such as `ghostget login --stdin`. */
   inputCommand?: string;
+  /**
+   * A complete example that feeds the value in, such as
+   * `pbpaste | ghostget login --stdin`. It replaces the default next step
+   * for terminal input.
+   */
+  inputExample?: string;
+  /** What the product was doing when the error happened. */
+  during?: CustodyActivity;
 }>;
 
 /**
  * Copy per problem. Placeholders: `{product}`, `{command}`, `{startCommand}`
- * (defaults to `{command} doctor`), `{inputCommand}` (defaults to
- * `{command} …`).
+ * (defaults to `{command} doctor`), `{inputExample}` (defaults to
+ * `Pipe or redirect the value into {inputCommand}.`, where `{inputCommand}`
+ * defaults to `{command}`).
  */
 export const CUSTODY_ERROR_COPY: Readonly<Record<CustodyProblem, Readonly<{ message: string; next: string }>>> = Object.freeze({
   "service-not-running": Object.freeze({
@@ -57,8 +73,8 @@ export const CUSTODY_ERROR_COPY: Readonly<Record<CustodyProblem, Readonly<{ mess
     next: "{command} doctor",
   }),
   "terminal-input": Object.freeze({
-    message: "{product} reads this value from a pipe, not from typing, so it stays out of your terminal history.",
-    next: "pbpaste | {inputCommand}",
+    message: "{product} doesn't read this value from typing, so it stays out of your terminal history.",
+    next: "{inputExample}",
   }),
   "unsafe-permissions": Object.freeze({
     message: "{product} stopped because its private files can be read by other users or aren't owned by you.",
@@ -96,6 +112,8 @@ export const CUSTODY_ERROR_CODES: Readonly<Record<string, CustodyProblem>> = Obj
   "control-response-too-large": "service-unexpected",
   "control-extra-output": "service-unexpected",
   "control-identity-changed": "service-unexpected",
+  connect: "service-not-running",
+  "response-limit": "service-unexpected",
   // protected input
   tty: "terminal-input",
   "protected-terminal": "terminal-input",
@@ -129,6 +147,23 @@ export const CUSTODY_ERROR_CODES: Readonly<Record<string, CustodyProblem>> = Obj
   "sidecar-protocol": "helper-unavailable",
 });
 
+/** Generic Rust codes that mean something else during a given activity. */
+export const CUSTODY_ACTIVITY_CODES: Readonly<Record<CustodyActivity, Readonly<Record<string, CustodyProblem>>>> = Object.freeze({
+  control: Object.freeze({
+    "not-found": "service-not-running",
+    stat: "service-not-running",
+    write: "service-not-running",
+    read: "service-timeout",
+    timeout: "service-timeout",
+    json: "service-unexpected",
+  }),
+  input: Object.freeze({
+    limit: "input-too-large",
+    capacity: "input-too-large",
+  }),
+  files: Object.freeze({}),
+});
+
 /** Fixed messages from this package's plain `Error`s → problem. */
 const MESSAGES: Readonly<Record<string, CustodyProblem>> = Object.freeze({
   "Directory must be physical, owned, and private.": "unsafe-permissions",
@@ -147,12 +182,21 @@ const SIDECAR_ERRORS: Readonly<Record<string, string>> = Object.freeze({
   CustodySidecarProtocolError: "sidecar-protocol",
 });
 
-function problemOf(error: unknown): CustodyProblem {
-  if (typeof error === "string") return CUSTODY_ERROR_CODES[error] ?? "unexpected";
+function problemOfCode(code: string, during: CustodyActivity | undefined): CustodyProblem | undefined {
+  const contextual = during === undefined ? undefined : CUSTODY_ACTIVITY_CODES[during];
+  if (contextual !== undefined && Object.hasOwn(contextual, code)) return contextual[code];
+  return Object.hasOwn(CUSTODY_ERROR_CODES, code) ? CUSTODY_ERROR_CODES[code] : undefined;
+}
+
+function problemOf(error: unknown, during: CustodyActivity | undefined): CustodyProblem {
+  if (typeof error === "string") return problemOfCode(error, during) ?? "unexpected";
   if (error === null || typeof error !== "object") return "unexpected";
   const { code, name, message } = error as { code?: unknown; name?: unknown; message?: unknown };
   if (typeof name === "string" && Object.hasOwn(SIDECAR_ERRORS, name)) return CUSTODY_ERROR_CODES[SIDECAR_ERRORS[name]!]!;
-  if (typeof code === "string" && Object.hasOwn(CUSTODY_ERROR_CODES, code)) return CUSTODY_ERROR_CODES[code]!;
+  if (typeof code === "string") {
+    const problem = problemOfCode(code, during);
+    if (problem !== undefined) return problem;
+  }
   if (typeof message === "string" && Object.hasOwn(MESSAGES, message)) return MESSAGES[message]!;
   return "unexpected";
 }
@@ -169,16 +213,17 @@ function plain(value: string): string {
  * `--debug` output.
  */
 export function describeCustodyError(error: unknown, options: DescribeCustodyOptions): CustodyDescription {
-  const problem = problemOf(error);
+  const problem = problemOf(error, options.during);
   const product = plain(options.product);
   const command = plain(options.command);
+  const inputCommand = options.inputCommand === undefined ? command : plain(options.inputCommand);
   const values: Readonly<Record<string, string>> = {
     product,
     command,
     startCommand: options.startCommand === undefined ? `${command} doctor` : plain(options.startCommand),
-    inputCommand: options.inputCommand === undefined ? `${command} …` : plain(options.inputCommand),
+    inputExample: options.inputExample === undefined ? `Pipe or redirect the value into ${inputCommand}.` : plain(options.inputExample),
   };
-  const fill = (template: string) => template.replace(/\{(product|command|startCommand|inputCommand)\}/gu, (_, key: string) => values[key]!);
+  const fill = (template: string) => template.replace(/\{(product|command|startCommand|inputExample)\}/gu, (_, key: string) => values[key]!);
   const copy = CUSTODY_ERROR_COPY[problem];
   return Object.freeze({ problem, message: fill(copy.message), next: fill(copy.next) });
 }

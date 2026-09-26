@@ -281,8 +281,8 @@ import { dirname as dirname2 } from "node:path";
 class ControlSocketError extends Error {
   code;
   name = "ControlSocketError";
-  constructor(code, message) {
-    super(message);
+  constructor(code, message, options) {
+    super(message, options);
     this.code = code;
   }
 }
@@ -520,7 +520,7 @@ async function requestControlSocket(options) {
     before = await socketIdentity(socketPath);
   } catch (error) {
     if (error.code === "ENOENT") {
-      throw new ControlSocketError("control-unavailable", "The control socket is unavailable.");
+      throw new ControlSocketError("control-unavailable", "The control socket is unavailable.", { cause: error });
     }
     throw error;
   }
@@ -589,7 +589,7 @@ class ProtectedInputError extends Error {
     this.code = code;
   }
 }
-var PROTECTED_INPUT_TERMINAL_MESSAGE = "Pipe the value in instead of typing it, for example: pbpaste | <command> --stdin. " + "Typing secrets into the terminal is off to keep them out of your scrollback.";
+var PROTECTED_INPUT_TERMINAL_MESSAGE = "Pipe or redirect the value in instead of typing it, so it stays out of your terminal history.";
 function readProtectedDescriptor(descriptor, options = {}) {
   const maximumBytes = options.maximumBytes ?? DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES;
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {

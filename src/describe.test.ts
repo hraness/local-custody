@@ -26,14 +26,24 @@ describe("describeCustodyError", () => {
     });
   });
 
-  test("terminal input points at a pipe", () => {
+  test("terminal input points at a pipe or a file", () => {
     const error = new ProtectedInputError("protected-terminal", PROTECTED_INPUT_TERMINAL_MESSAGE);
     expect(describeCustodyError(error, { product: "Ghostget", command: "ghostget", inputCommand: "ghostget login --stdin" })).toEqual({
       problem: "terminal-input",
-      message: "Ghostget reads this value from a pipe, not from typing, so it stays out of your terminal history.",
-      next: "pbpaste | ghostget login --stdin",
+      message: "Ghostget doesn't read this value from typing, so it stays out of your terminal history.",
+      next: "Pipe or redirect the value into ghostget login --stdin.",
     });
-    expect(describeCustodyError("tty", names).next).toBe("pbpaste | textbutler …");
+    expect(describeCustodyError("tty", { ...names, inputExample: "pbpaste | textbutler pair --stdin" }).next).toBe("pbpaste | textbutler pair --stdin");
+    expect(describeCustodyError("tty", names).next).toBe("Pipe or redirect the value into textbutler.");
+  });
+
+  test("generic Rust codes follow what the product was doing", () => {
+    expect(describeCustodyError("connect", names).problem).toBe("service-not-running");
+    expect(describeCustodyError({ code: "not-found" }, { ...names, during: "control" }).problem).toBe("service-not-running");
+    expect(describeCustodyError("read", { ...names, during: "control" }).problem).toBe("service-timeout");
+    expect(describeCustodyError("json", { ...names, during: "control" }).problem).toBe("service-unexpected");
+    expect(describeCustodyError("not-found", names).problem).toBe("files-unavailable");
+    expect(describeCustodyError("limit", { ...names, during: "input" }).problem).toBe("input-too-large");
   });
 
   test("unsafe files never suggest deleting anything", () => {
@@ -82,6 +92,7 @@ describe("control socket error codes", () => {
       expect(error).toBeInstanceOf(ControlSocketError);
       expect((error as ControlSocketError).code).toBe("control-unavailable");
       expect((error as Error).message).toBe("The control socket is unavailable.");
+      expect(((error as Error).cause as NodeJS.ErrnoException).code).toBe("ENOENT");
       expect(describeCustodyError(error, names).problem).toBe("service-not-running");
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -92,7 +103,7 @@ describe("control socket error codes", () => {
 describe("protected input terminal message", () => {
   test("says what to do instead", () => {
     expect(PROTECTED_INPUT_TERMINAL_MESSAGE).toBe(
-      "Pipe the value in instead of typing it, for example: pbpaste | <command> --stdin. Typing secrets into the terminal is off to keep them out of your scrollback.",
+      "Pipe or redirect the value in instead of typing it, so it stays out of your terminal history.",
     );
   });
 });

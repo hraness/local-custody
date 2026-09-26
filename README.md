@@ -50,7 +50,7 @@ A Rust implementation passes when it produces the named outcome for every case.
 
 ## Explain failures to people
 
-`describeCustodyError(error, { product, command, startCommand?, inputCommand? })`
+`describeCustodyError(error, { product, command, startCommand?, inputCommand?, inputExample?, during? })`
 turns any failure from this package into one sentence and one next step, so a
 product never prints an internal error:
 
@@ -64,13 +64,22 @@ const { message, next } = describeCustodyError(error, {
 // next:    "textbutler daemon start"
 ```
 
-It recognizes `ControlSocketError` and `ProtectedInputError` codes (a request
-to a socket that doesn't exist now fails with `control-unavailable`), Rust and
-sidecar error codes, and this package's fixed error messages. Anything else is
-described as unexpected with `{command} doctor` as the next step. Paths and
-codes never appear in the text, and the copy never suggests deleting files.
-Reading protected input from a terminal now fails with a message that says to
-pipe the value in instead. The Rust crate has the same copy through
+It recognizes `ControlSocketError` and `ProtectedInputError` codes, Rust and
+sidecar error codes, and this package's fixed error messages. Rust uses
+generic codes such as `read` and `not-found`, so pass `during: "control"` (or
+`"input"`) to describe them as a stopped service rather than a file problem.
+Anything else is described as unexpected with `{command} doctor` as the next
+step. Paths and codes never appear in the text, and the copy never suggests
+deleting files. For terminal input, pass `inputExample` (such as
+`pbpaste | ghostget login --stdin`) to show an exact command.
+
+Behavior changes in 0.7.0: a request to a socket that doesn't exist fails with
+`ControlSocketError` code `control-unavailable` (the original `ENOENT` is its
+`cause`), and reading protected input from a terminal says to pipe or redirect
+the value in. Each subpath is bundled separately, so check `error.code` or
+`error.name` rather than `instanceof` across entrypoints.
+
+The Rust crate has the same copy through
 `describe_error(code, &DescribeOptions { .. })` and `CustodyError::describe`;
 `bun run generate:error-copy` writes `rust/src/error-copy.json` from the
 TypeScript table and the check fails if they drift.
