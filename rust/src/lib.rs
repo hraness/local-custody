@@ -4,6 +4,9 @@
 //! `spec/vectors.json`. It is product-neutral and owns only transport/custody
 //! mechanics, not product semantics.
 
+mod describe;
+pub use describe::{describe_error, Activity, DescribeOptions, ErrorDescription};
+
 use std::fmt;
 #[cfg(unix)]
 use std::fs::Permissions;
@@ -1753,7 +1756,10 @@ pub fn read_protected_descriptor(
         let raw: RawFd = fd;
         let is_tty = unsafe { libc::isatty(raw) != 0 };
         if is_tty {
-            return Err(CustodyError::new("tty", "descriptor is a terminal"));
+            return Err(CustodyError::new(
+                "tty",
+                "Redirect the value from a file only you can read instead of typing it, so it stays out of your terminal history.",
+            ));
         }
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(raw, &mut stat) } != 0 {

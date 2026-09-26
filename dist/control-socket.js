@@ -138,6 +138,14 @@ async function readPrivateFile(path, maximumBytes) {
 import { chmod, unlink } from "node:fs/promises";
 import { createServer, connect } from "node:net";
 import { dirname as dirname2 } from "node:path";
+class ControlSocketError extends Error {
+  code;
+  name = "ControlSocketError";
+  constructor(code, message, options) {
+    super(message, options);
+    this.code = code;
+  }
+}
 var MAXIMUM_SOCKET_PATH_BYTES = 100;
 var DEFAULT_MAXIMUM_CONNECTIONS = 16;
 var DEFAULT_HEADER_TIMEOUT_MS = 5000;
@@ -366,8 +374,16 @@ async function requestControlSocket(options) {
   if (frame.length > maximumRequestBytes) {
     throw new Error("Control request exceeds its frame limit.");
   }
-  await assertOwnedPath(dirname2(socketPath), { kind: "directory", canonical: true });
-  const before = await socketIdentity(socketPath);
+  let before;
+  try {
+    await assertOwnedPath(dirname2(socketPath), { kind: "directory", canonical: true });
+    before = await socketIdentity(socketPath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new ControlSocketError("control-unavailable", "The control socket is unavailable.", { cause: error });
+    }
+    throw error;
+  }
   return new Promise((resolvePromise, rejectPromise) => {
     const socket = connect(socketPath);
     let buffer = Buffer.alloc(0);
@@ -383,11 +399,11 @@ async function requestControlSocket(options) {
       else
         resolvePromise(value);
     };
-    const timer = setTimeout(() => settle(new Error("Control request timed out.")), timeoutMs);
+    const timer = setTimeout(() => settle(new ControlSocketError("control-timeout", "Control request timed out.")), timeoutMs);
     socket.once("connect", () => {
       socketIdentity(socketPath).then((after) => {
         if (!sameIdentity(before, after))
-          throw new Error("Control socket identity changed.");
+          throw new ControlSocketError("control-identity-changed", "Control socket identity changed.");
         if (!settled)
           socket.write(frame);
       }).catch((error) => settle(error instanceof Error ? error : new Error("Control socket changed.")));
@@ -395,27 +411,27 @@ async function requestControlSocket(options) {
     socket.on("data", (chunk) => {
       buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
       if (buffer.length > maximumResponseBytes) {
-        settle(new Error("Control response exceeds its frame limit."));
+        settle(new ControlSocketError("control-response-too-large", "Control response exceeds its frame limit."));
         return;
       }
       const newline = buffer.indexOf(10);
       if (newline < 0)
         return;
       if (newline !== buffer.length - 1) {
-        settle(new Error("Unexpected additional control output."));
+        settle(new ControlSocketError("control-extra-output", "Unexpected additional control output."));
         return;
       }
       try {
         const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, newline)));
         settle(null, options.parseResponse(value));
       } catch {
-        settle(new Error("Invalid control response."));
+        settle(new ControlSocketError("control-invalid-response", "Invalid control response."));
       }
     });
-    socket.once("error", () => settle(new Error("The control socket is unavailable.")));
+    socket.once("error", () => settle(new ControlSocketError("control-unavailable", "The control socket is unavailable.")));
     socket.once("close", () => {
       if (!settled)
-        settle(new Error("The control socket closed without a response."));
+        settle(new ControlSocketError("control-closed", "The control socket closed without a response."));
     });
   });
 }
@@ -423,5 +439,6 @@ export {
   requestControlSocket,
   listenControlSocket,
   attachControlSocket,
-  MAXIMUM_SOCKET_PATH_BYTES
+  MAXIMUM_SOCKET_PATH_BYTES,
+  ControlSocketError
 };

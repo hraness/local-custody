@@ -23,11 +23,11 @@ and x64.
 
 | Subpath | Exports |
 |---|---|
-| `@hraness/local-custody` | Every stable export below |
+| `@hraness/local-custody` | Every stable export below, plus `describeCustodyError` |
 | `/private-paths` | `ensurePrivateDirectory`, `assertOwnedPath`, `assertOwnedPathSync`, `readPrivateFile`, `readOwnedFileStable`, `readOwnedFileStableSync` |
 | `/atomic-publish` | `publishPrivateFile`, `createPrivateFileOnce`, `createPrivateFileOnceSync` |
-| `/control-socket` | `listenControlSocket`, `attachControlSocket`, `requestControlSocket` |
-| `/protected-input` | `readProtectedDescriptor`, `readProtectedStdin` |
+| `/control-socket` | `listenControlSocket`, `attachControlSocket`, `requestControlSocket`, `ControlSocketError` |
+| `/protected-input` | `readProtectedDescriptor`, `readProtectedStdin`, `ProtectedInputError` |
 | `/custody-rust` | `loadLocalCustodyRustEngine`, which prefers the Rust sidecar and falls back to TypeScript |
 | `/artifact-manifest` | `loadLocalCustodyArtifactManifest`, `findLocalCustodyArtifact`, which read the manifest of shipped sidecar binaries |
 | `/rust-fallback` | `emitLocalCustodyFallback`, which prints a short notice when an operation falls back to TypeScript |
@@ -47,6 +47,42 @@ and x64.
 The rules every implementation follows are in [`spec/custody.md`](spec/custody.md),
 and the cases a port must reproduce are in [`spec/vectors.json`](spec/vectors.json).
 A Rust implementation passes when it produces the named outcome for every case.
+
+## Explain failures to people
+
+`describeCustodyError(error, { product, command, startCommand?, inputCommand?, inputExample?, during? })`
+turns any failure from this package into one sentence and one next step, so a
+product never prints an internal error:
+
+```ts
+import { describeCustodyError } from "@hraness/local-custody";
+
+const { message, next } = describeCustodyError(error, {
+  product: "Textbutler", command: "textbutler", startCommand: "textbutler daemon start",
+});
+// message: "Textbutler's background service isn't running."
+// next:    "textbutler daemon start"
+```
+
+It recognizes `ControlSocketError` and `ProtectedInputError` codes, Rust and
+sidecar error codes, and this package's fixed error messages. Rust uses
+generic codes such as `read` and `not-found`, so pass `during: "control"` (or
+`"input"`) to describe them as a stopped service rather than a file problem.
+Anything else is described as unexpected with `{command} doctor` as the next
+step. Paths and codes never appear in the text, and the copy never suggests
+deleting files. For terminal input, pass `inputExample` (such as
+`pbpaste | ghostget login --stdin`) to show an exact command.
+
+Behavior changes in 0.7.0: a request to a socket that doesn't exist fails with
+`ControlSocketError` code `control-unavailable` (the original `ENOENT` is its
+`cause`), and reading protected input from a terminal says to pipe or redirect
+the value in. Each subpath is bundled separately, so check `error.code` or
+`error.name` rather than `instanceof` across entrypoints.
+
+The Rust crate has the same copy through
+`describe_error(code, &DescribeOptions { .. })` and `CustodyError::describe`;
+`bun run generate:error-copy` writes `rust/src/error-copy.json` from the
+TypeScript table and the check fails if they drift.
 
 ## Rust sidecar
 

@@ -1,6 +1,6 @@
 {
   "name": "@hraness/local-custody",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Owner-only files, atomic private writes, a local JSON control socket, and file-descriptor secret input for Hraness product CLIs.",
   "license": "MIT",
   "type": "module",
@@ -96,7 +96,9 @@
     "rust:build": "cd rust && cargo build --release",
     "rust:build:artifacts": "bun run ./scripts/build-rust-artifacts.ts",
     "rust:build:manifest": "bun run ./scripts/build-rust-manifest.ts",
-    "check": "bun run check:portfolio-inventory && bun run lint && bun run typecheck && bun run test && bun run rust:check && bun run build && bun run rust:build:artifacts && bun run check:determinism && bun run test:package",
+    "generate:error-copy": "bun run ./scripts/generate-error-copy.ts",
+    "check:error-copy": "bun run ./scripts/generate-error-copy.ts --check",
+    "check": "bun run check:portfolio-inventory && bun run check:error-copy && bun run lint && bun run typecheck && bun run test && bun run rust:check && bun run build && bun run rust:build:artifacts && bun run check:determinism && bun run test:package",
     "prepack": "bun run check"
   },
   "devDependencies": {

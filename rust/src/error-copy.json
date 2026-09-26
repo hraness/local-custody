@@ -1,0 +1,98 @@
+{
+  "copy": {
+    "files-changed": {
+      "message": "{product}'s private files changed while it was reading them.",
+      "next": "Try again in a moment."
+    },
+    "files-unavailable": {
+      "message": "{product} couldn't read or save its private files.",
+      "next": "{command} doctor"
+    },
+    "helper-unavailable": {
+      "message": "{product}'s file helper is missing or didn't respond.",
+      "next": "{command} doctor"
+    },
+    "input-too-large": {
+      "message": "The value is larger than {product} accepts.",
+      "next": "Check that you copied only the value, then try again."
+    },
+    "service-not-running": {
+      "message": "{product}'s background service isn't running.",
+      "next": "{startCommand}"
+    },
+    "service-timeout": {
+      "message": "{product}'s background service didn't answer in time.",
+      "next": "{command} doctor"
+    },
+    "service-unexpected": {
+      "message": "{product}'s background service sent an answer {product} didn't expect.",
+      "next": "{command} doctor"
+    },
+    "terminal-input": {
+      "message": "{product} doesn't read this value from typing, so it stays out of your terminal history.",
+      "next": "{inputExample}"
+    },
+    "unexpected": {
+      "message": "{product} hit an unexpected problem with its private files.",
+      "next": "{command} doctor"
+    },
+    "unsafe-permissions": {
+      "message": "{product} stopped because its private files can be read by other users or aren't owned by you.",
+      "next": "{command} doctor"
+    }
+  },
+  "codes": {
+    "capacity": "input-too-large",
+    "changed": "files-changed",
+    "chmod": "files-unavailable",
+    "connect": "service-not-running",
+    "control-closed": "service-not-running",
+    "control-extra-output": "service-unexpected",
+    "control-identity-changed": "service-unexpected",
+    "control-invalid-response": "service-unexpected",
+    "control-response-too-large": "service-unexpected",
+    "control-timeout": "service-timeout",
+    "control-unavailable": "service-not-running",
+    "create": "files-unavailable",
+    "dir-fsync": "files-unavailable",
+    "dir-open": "files-unavailable",
+    "fsync": "files-unavailable",
+    "kind": "unsafe-permissions",
+    "mode": "unsafe-permissions",
+    "mode-mismatch": "unsafe-permissions",
+    "not-found": "files-unavailable",
+    "open": "files-unavailable",
+    "owner": "unsafe-permissions",
+    "path": "unsafe-permissions",
+    "protected-terminal": "terminal-input",
+    "protected-too-large": "input-too-large",
+    "protected-unsafe-file": "unsafe-permissions",
+    "read": "files-unavailable",
+    "rename": "files-unavailable",
+    "response-limit": "service-unexpected",
+    "root": "unsafe-permissions",
+    "separator": "unsafe-permissions",
+    "sidecar-not-found": "helper-unavailable",
+    "sidecar-protocol": "helper-unavailable",
+    "sidecar-timeout": "helper-unavailable",
+    "stage": "files-unavailable",
+    "stat": "files-unavailable",
+    "tty": "terminal-input",
+    "write": "files-unavailable"
+  },
+  "activityCodes": {
+    "control": {
+      "json": "service-unexpected",
+      "not-found": "service-not-running",
+      "read": "service-timeout",
+      "stat": "service-not-running",
+      "timeout": "service-timeout",
+      "write": "service-not-running"
+    },
+    "files": {},
+    "input": {
+      "capacity": "input-too-large",
+      "limit": "input-too-large"
+    }
+  }
+}

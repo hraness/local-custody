@@ -2,6 +2,16 @@
 import { fstatSync, readSync } from "node:fs";
 import { isatty } from "node:tty";
 var DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES = 65536;
+
+class ProtectedInputError extends Error {
+  code;
+  name = "ProtectedInputError";
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+var PROTECTED_INPUT_TERMINAL_MESSAGE = "Pipe or redirect the value in instead of typing it, so it stays out of your terminal history.";
 function readProtectedDescriptor(descriptor, options = {}) {
   const maximumBytes = options.maximumBytes ?? DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES;
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
@@ -11,13 +21,13 @@ function readProtectedDescriptor(descriptor, options = {}) {
     throw new Error("Protected input requires a valid descriptor.");
   }
   if (isatty(descriptor)) {
-    throw new Error("Protected input does not read terminals.");
+    throw new ProtectedInputError("protected-terminal", PROTECTED_INPUT_TERMINAL_MESSAGE);
   }
   const metadata = fstatSync(descriptor, { bigint: true });
   if (metadata.isFile()) {
     const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
     if (uid !== undefined && metadata.uid !== BigInt(uid) || (metadata.mode & 0o077n) !== 0n) {
-      throw new Error("Protected input file must be owned and private.");
+      throw new ProtectedInputError("protected-unsafe-file", "Protected input file must be owned and private.");
     }
   }
   const buffer = Buffer.alloc(maximumBytes + 1);
@@ -28,9 +38,9 @@ function readProtectedDescriptor(descriptor, options = {}) {
       break;
     offset += read;
     if (offset > maximumBytes)
-      throw new Error("Protected input exceeds its size bound.");
+      throw new ProtectedInputError("protected-too-large", "Protected input exceeds its size bound.");
     if (offset === buffer.length)
-      throw new Error("Protected input exceeds its size bound.");
+      throw new ProtectedInputError("protected-too-large", "Protected input exceeds its size bound.");
   }
   return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, offset));
 }
@@ -40,5 +50,7 @@ function readProtectedStdin(options = {}) {
 export {
   readProtectedStdin,
   readProtectedDescriptor,
+  ProtectedInputError,
+  PROTECTED_INPUT_TERMINAL_MESSAGE,
   DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES
 };
