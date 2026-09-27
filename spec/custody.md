@@ -188,7 +188,9 @@ behind a newline-delimited JSON protocol on stdio.
    refuses descriptors 0–2 and `read_protected_stdin` with `kind`, because
    its stdio carries this protocol;
    `control_socket_request` `{socketPath, request, maximumResponseBytes,
-   timeoutMs}` → the socket's raw response value.
+   timeoutMs}` → the socket's raw response value;
+   `generic_password_read` `{service, account}` → `{contentBase64}` (macOS
+   only; see "Generic password read").
 3. `exactMode` is an octal **string** (for example `"0600"`); byte bounds are
    unsigned integers; payloads are base64.
 4. A domain failure is `{"ok":false,"code","message"}` — `code` names the
@@ -207,6 +209,28 @@ behind a newline-delimited JSON protocol on stdio.
    so there is no `assert_owned_fd` or guarded-publish op. Engines route
    `beforeCommit` publishes to the in-process implementation for the same
    reason.
+
+### Generic password read
+
+macOS only. The sidecar's `generic_password_read` op reads one
+generic-password item's secret bytes from the current user's default
+keychain with `SecItemCopyMatching`, so the read is attributed to the
+sidecar binary's own code signature: a product that ships a signed copy as
+an application helper gets its own prompt and access-list entry instead of
+a system tool's.
+
+1. `service` and `account` are required selectors, each 1–256 UTF-8 bytes
+   without control characters; there is no enumeration form.
+2. The value is returned as `contentBase64` and never exceeds 4096 bytes
+   (`limit`).
+3. Failure codes are typed: `missing` when the item does not exist,
+   `denied` when the person declines or authentication fails,
+   `interaction-not-allowed` when the keychain is locked or the process may
+   not raise the prompt, `keychain-error` for other OS failures carrying
+   only the numeric status, and `unsupported` off macOS.
+4. There is no TypeScript implementation: the op exists so the read happens
+   inside the caller-chosen signed binary, and a native fallback would break
+   that attribution.
 
 ### Execution flavor
 

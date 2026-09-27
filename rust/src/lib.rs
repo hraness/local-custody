@@ -2174,6 +2174,94 @@ pub fn request_control_socket<P: AsRef<Path>>(
     ))
 }
 
+// ---------------------------------------------------------------------------
+// Generic-password keychain read (macOS)
+// ---------------------------------------------------------------------------
+
+/// Upper bound for a generic-password `service` or `account` selector, in
+/// UTF-8 bytes. The Security framework accepts longer names, but custody
+/// callers never need them and the sidecar protocol stays predictable.
+const GENERIC_PASSWORD_FIELD_MAX_BYTES: usize = 256;
+
+/// Upper bound for a returned generic-password secret. Browser safe-storage
+/// passwords are short ASCII strings; the bound keeps a malformed or
+/// attacker-shaped item from flooding the caller.
+const GENERIC_PASSWORD_VALUE_MAX_BYTES: usize = 4096;
+
+fn validate_generic_password_selector(value: &str, field: &str) -> Result<(), CustodyError> {
+    if value.is_empty()
+        || value.len() > GENERIC_PASSWORD_FIELD_MAX_BYTES
+        || value.chars().any(|c| c.is_control() || c == '\u{7f}')
+    {
+        return Err(CustodyError::new(
+            "invalid-request",
+            format!("{field} must be 1-256 UTF-8 bytes without control characters"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_generic_password_request(service: &str, account: &str) -> Result<(), CustodyError> {
+    validate_generic_password_selector(service, "service")?;
+    validate_generic_password_selector(account, "account")
+}
+
+#[cfg(target_os = "macos")]
+fn generic_password_failure(status: i32) -> CustodyError {
+    // Security framework OSStatus codes. Only the status number crosses the
+    // boundary; no keychain contents or OS internals leak into the message.
+    let (code, detail) = match status {
+        // errSecItemNotFound
+        -25300 => ("missing", "no such generic-password item"),
+        // errSecUserCanceled: the person declined the access prompt.
+        -128 => ("denied", "the keychain read was declined"),
+        // errSecAuthFailed: authentication or authorization failed.
+        -25293 => ("denied", "the keychain read was declined"),
+        // errSecInteractionNotAllowed: the keychain is locked or this
+        // process is not allowed to raise the access prompt.
+        -25318 => (
+            "interaction-not-allowed",
+            "the keychain is locked or this process cannot ask for access",
+        ),
+        _ => ("keychain-error", "the keychain read failed"),
+    };
+    CustodyError::new(code, format!("{detail} (status {status})"))
+}
+
+/// Reads one generic-password item's secret bytes from the current user's
+/// default keychain. macOS attributes the read to this process's code
+/// signature, so a signed helper gets its own access-list entry and prompt
+/// instead of borrowing a system tool's.
+///
+/// `service` and `account` select the item exactly; both are required so a
+/// caller can never enumerate secrets. The returned bytes are the item's
+/// secret verbatim — encoding decisions belong to the caller.
+#[cfg(target_os = "macos")]
+pub fn read_generic_password(service: &str, account: &str) -> Result<Vec<u8>, CustodyError> {
+    validate_generic_password_request(service, account)?;
+    let bytes = security_framework::passwords::get_generic_password(service, account)
+        .map_err(|error| generic_password_failure(error.code()))?;
+    if bytes.len() > GENERIC_PASSWORD_VALUE_MAX_BYTES {
+        return Err(CustodyError::new(
+            "limit",
+            "generic-password value exceeds the 4096-byte bound",
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Generic-password reads exist only on macOS; other platforms report
+/// `unsupported` after validating the selector so malformed requests fail
+/// identically everywhere.
+#[cfg(not(target_os = "macos"))]
+pub fn read_generic_password(service: &str, account: &str) -> Result<Vec<u8>, CustodyError> {
+    validate_generic_password_request(service, account)?;
+    Err(CustodyError::new(
+        "unsupported",
+        "generic-password keychain reads require macOS",
+    ))
+}
+
 #[cfg(all(test, windows))]
 mod windows_acl_tests {
     use super::*;
