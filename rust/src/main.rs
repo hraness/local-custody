@@ -16,6 +16,8 @@
 //! - `{"op":"read_protected_stdin","maximumBytes":N}`
 //! - `{"op":"control_socket_request","socketPath":"...","request":{...},
 //!    "maximumResponseBytes":N,"timeoutMs":N}`
+//! - `{"op":"generic_password_read","service":"...","account":"..."}`
+//!   (macOS only; the read is attributed to this binary's code signature)
 //!
 //! `assert_owned_fd` and guarded publish are library-only: descriptor passing
 //! and in-process commit guards cannot cross the sidecar's process boundary.
@@ -93,6 +95,8 @@ enum Request {
         #[serde(rename = "timeoutMs")]
         timeout_ms: u64,
     },
+    #[serde(rename = "generic_password_read")]
+    GenericPasswordRead { service: String, account: String },
 }
 
 fn parse_mode(s: &str) -> Result<u32, String> {
@@ -287,6 +291,11 @@ fn dispatch(req: Request) -> Result<serde_json::Value, (String, String)> {
             )
             .map_err(|e| (e.code, e.message))?;
             Ok(response)
+        }
+        Request::GenericPasswordRead { service, account } => {
+            let bytes = local_custody::read_generic_password(&service, &account)
+                .map_err(|e| (e.code, e.message))?;
+            Ok(json!({ "contentBase64": base64_encode(&bytes) }))
         }
     }
 }

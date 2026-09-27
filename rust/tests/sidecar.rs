@@ -200,3 +200,20 @@ fn stable_read_round_trips_content() {
     // "payload" in base64.
     assert_eq!(response["contentBase64"], "cGF5bG9hZA==");
 }
+
+#[test]
+fn generic_password_read_reports_missing_for_absent_item() {
+    // A random service name never exists, so no access prompt can appear on
+    // macOS; other platforms report the op as unsupported.
+    let service = format!("local-custody-test-{}", std::process::id());
+    let request = format!(
+        "{{\"op\":\"generic_password_read\",\"service\":\"{service}-missing\",\"account\":\"none\"}}"
+    );
+    let responses = run_sidecar(&[request]);
+    let response = &responses[0];
+    assert!(is_failure_envelope(response), "unexpected {response}");
+    #[cfg(target_os = "macos")]
+    assert_eq!(response["code"], "missing");
+    #[cfg(not(target_os = "macos"))]
+    assert_eq!(response["code"], "unsupported");
+}

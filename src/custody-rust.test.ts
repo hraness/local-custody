@@ -1,3 +1,4 @@
+import assert from "node:assert";
 import { chmodSync, openSync, realpathSync, writeSync, closeSync } from "node:fs";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import {
   CustodyError,
   loadLocalCustodyRustEngine,
+  readGenericPassword,
   sidecarBinaryPath,
 } from "./custody-rust";
 import type { LocalCustodyRustEngine } from "./custody-rust";
@@ -247,5 +249,55 @@ describe("custody-rust loader", () => {
         process.env[SIDECAR_ENV] = realPath;
       }
     }
+  });
+});
+
+describe("readGenericPassword", () => {
+  const originalEnv = process.env[SIDECAR_ENV];
+  let binary: string;
+
+  beforeAll(async () => {
+    binary = await ensureSidecarPath();
+  }, 120000);
+
+  afterAll(() => {
+    if (originalEnv === undefined) {
+      delete process.env[SIDECAR_ENV];
+    } else {
+      process.env[SIDECAR_ENV] = originalEnv;
+    }
+  });
+
+  test("rejects malformed selectors without spawning the sidecar", async () => {
+    await assert.rejects(readGenericPassword(binary, "", "account"), TypeError);
+    await assert.rejects(readGenericPassword(binary, "service", ""), TypeError);
+    await assert.rejects(readGenericPassword(binary, "x".repeat(257), "account"), TypeError);
+    await assert.rejects(readGenericPassword(binary, "bad\u0000service", "account"), TypeError);
+  });
+
+  test("propagates sidecar domain failures as typed custody errors", async () => {
+    if (process.platform === "darwin") {
+      // A random service name never exists, so no keychain prompt can appear.
+      const service = `local-custody-test-${crypto.randomUUID()}`;
+      const error = await readGenericPassword(binary, service, "no-account").then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(CustodyError);
+      expect((error as CustodyError).code).toBe("missing");
+    } else {
+      const error = await readGenericPassword(binary, "any-service", "any-account").then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(CustodyError);
+      expect((error as CustodyError).code).toBe("unsupported");
+    }
+  });
+
+  test("fails closed when the helper binary is absent", async () => {
+    await assert.rejects(
+      readGenericPassword(join(tmpdir(), "local-custody-no-such-helper"), "svc", "acct"),
+    );
   });
 });

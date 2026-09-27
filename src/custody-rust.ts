@@ -500,6 +500,71 @@ async function rustRequestControlSocket<T>(
 }
 
 // ---------------------------------------------------------------------------
+// Generic-password keychain read (macOS)
+// ---------------------------------------------------------------------------
+
+/** Upper bound for a generic-password selector, in UTF-8 bytes. */
+export const GENERIC_PASSWORD_FIELD_MAX_BYTES = 256;
+/** Upper bound for a returned generic-password secret. */
+export const GENERIC_PASSWORD_VALUE_MAX_BYTES = 4096;
+
+function validateGenericPasswordSelector(value: string, field: string): void {
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || Buffer.byteLength(value, "utf8") > GENERIC_PASSWORD_FIELD_MAX_BYTES
+    || [...value].some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code < 0x20 || code === 0x7f;
+    })
+  ) {
+    throw new TypeError(`${field} must be 1-256 UTF-8 bytes without control characters`);
+  }
+}
+
+/**
+ * Reads one generic-password item's secret bytes from the current user's
+ * default keychain through the sidecar binary at `binaryPath`. macOS only.
+ *
+ * Run it through a product-signed copy of the binary — a helper assembled
+ * into the product's own app bundle — so the Keychain prompt names the
+ * product and the access-list entry binds to the helper's signature instead
+ * of a system tool's. Domain failures arrive as {@link CustodyError}:
+ * `missing`, `denied`, `interaction-not-allowed`, `keychain-error`,
+ * `limit`, or `unsupported` on other platforms.
+ *
+ * There is intentionally no TypeScript fallback: the point of this op is
+ * that the request comes from the caller-chosen signed binary.
+ */
+export async function readGenericPassword(
+  binaryPath: string,
+  service: string,
+  account: string,
+): Promise<Uint8Array> {
+  validateGenericPasswordSelector(service, "service");
+  validateGenericPasswordSelector(account, "account");
+  const parsed = await runRequest(
+    binaryPath,
+    { op: "generic_password_read", service, account },
+    FIXED_REQUEST_BYTES,
+    base64Bound(GENERIC_PASSWORD_VALUE_MAX_BYTES) + ENVELOPE_SLACK_BYTES,
+  );
+  const candidate = parsed as Record<string, unknown>;
+  if (
+    !isRecord(parsed)
+    || typeof candidate.contentBase64 !== "string"
+    || !BASE64_PATTERN.test(candidate.contentBase64)
+  ) {
+    throw new CustodySidecarProtocolError(new Error("invalid generic_password_read fields"), JSON.stringify(parsed));
+  }
+  const bytes = Buffer.from(candidate.contentBase64, "base64");
+  if (bytes.length > GENERIC_PASSWORD_VALUE_MAX_BYTES) {
+    throw new CustodySidecarProtocolError(new Error("generic_password_read payload exceeds its bound"), JSON.stringify(parsed));
+  }
+  return bytes;
+}
+
+// ---------------------------------------------------------------------------
 // Engine assembly
 // ---------------------------------------------------------------------------
 

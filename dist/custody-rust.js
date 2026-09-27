@@ -351,6 +351,30 @@ async function rustRequestControlSocket(binary, options) {
     throw new Error("Invalid control response.");
   }
 }
+var GENERIC_PASSWORD_FIELD_MAX_BYTES = 256;
+var GENERIC_PASSWORD_VALUE_MAX_BYTES = 4096;
+function validateGenericPasswordSelector(value, field) {
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > GENERIC_PASSWORD_FIELD_MAX_BYTES || [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code < 32 || code === 127;
+  })) {
+    throw new TypeError(`${field} must be 1-256 UTF-8 bytes without control characters`);
+  }
+}
+async function readGenericPassword(binaryPath, service, account) {
+  validateGenericPasswordSelector(service, "service");
+  validateGenericPasswordSelector(account, "account");
+  const parsed = await runRequest(binaryPath, { op: "generic_password_read", service, account }, FIXED_REQUEST_BYTES, base64Bound(GENERIC_PASSWORD_VALUE_MAX_BYTES) + ENVELOPE_SLACK_BYTES);
+  const candidate = parsed;
+  if (!isRecord(parsed) || typeof candidate.contentBase64 !== "string" || !BASE64_PATTERN.test(candidate.contentBase64)) {
+    throw new CustodySidecarProtocolError(new Error("invalid generic_password_read fields"), JSON.stringify(parsed));
+  }
+  const bytes = Buffer.from(candidate.contentBase64, "base64");
+  if (bytes.length > GENERIC_PASSWORD_VALUE_MAX_BYTES) {
+    throw new CustodySidecarProtocolError(new Error("generic_password_read payload exceeds its bound"), JSON.stringify(parsed));
+  }
+  return bytes;
+}
 function fallbackNotice(reason, inputClass) {
   emitLocalCustodyFallback(inputClass === undefined ? { tag: FALLBACK_TAG, reason } : { tag: FALLBACK_TAG, reason, inputClass });
 }
@@ -470,7 +494,10 @@ async function loadLocalCustodyRustEngine() {
 }
 export {
   sidecarBinaryPath,
+  readGenericPassword,
   loadLocalCustodyRustEngine,
+  GENERIC_PASSWORD_VALUE_MAX_BYTES,
+  GENERIC_PASSWORD_FIELD_MAX_BYTES,
   CustodySidecarTimeoutError,
   CustodySidecarProtocolError,
   CustodySidecarNotFoundError,
