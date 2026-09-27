@@ -2185,7 +2185,9 @@ const GENERIC_PASSWORD_FIELD_MAX_BYTES: usize = 256;
 
 /// Upper bound for a returned generic-password secret. Browser safe-storage
 /// passwords are short ASCII strings; the bound keeps a malformed or
-/// attacker-shaped item from flooding the caller.
+/// attacker-shaped item from flooding the caller. Only macOS performs the
+/// read, so the bound is defined there.
+#[cfg(target_os = "macos")]
 const GENERIC_PASSWORD_VALUE_MAX_BYTES: usize = 4096;
 
 fn validate_generic_password_selector(value: &str, field: &str) -> Result<(), CustodyError> {
