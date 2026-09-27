@@ -86,3 +86,36 @@ fn directory_descriptor_rejected() {
     let err = read_protected_descriptor(handle.as_raw_fd(), Some(64)).unwrap_err();
     assert_eq!(err.code, "kind");
 }
+
+extern "C" fn ignore_signal(_: libc::c_int) {}
+
+#[test]
+fn piped_input_survives_an_interrupting_signal() {
+    // A handler without SA_RESTART makes a blocked read return EINTR.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = ignore_signal as *const () as usize;
+        action.sa_flags = 0;
+        libc::sigemptyset(&mut action.sa_mask);
+        assert_eq!(
+            libc::sigaction(libc::SIGUSR2, &action, std::ptr::null_mut()),
+            0
+        );
+    }
+    let mut fds = [0i32; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    let (read_end, write_end) = (fds[0], fds[1]);
+    let reader = unsafe { libc::pthread_self() } as usize;
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        unsafe { libc::pthread_kill(reader as libc::pthread_t, libc::SIGUSR2) };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let content = b"slow-token";
+        unsafe { libc::write(write_end, content.as_ptr().cast(), content.len()) };
+        unsafe { libc::close(write_end) };
+    });
+    let result = read_protected_descriptor(read_end, Some(1_024));
+    writer.join().unwrap();
+    unsafe { libc::close(read_end) };
+    assert_eq!(result.unwrap(), "slow-token");
+}

@@ -1759,7 +1759,7 @@ pub fn read_protected_descriptor(
         if is_tty {
             return Err(CustodyError::new(
                 "tty",
-                "Redirect the value from a file only you can read instead of typing it, so it stays out of your terminal history.",
+                "Pipe or redirect the value in instead of typing it, so it stays out of your terminal history.",
             ));
         }
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
@@ -1807,7 +1807,7 @@ pub fn read_protected_descriptor(
     while buf.len() < maximum_bytes {
         let remaining = maximum_bytes - buf.len();
         let mut chunk = vec![0u8; remaining.min(4096)];
-        let n = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+        let n = read_retrying_interrupts(fd, &mut chunk);
         if n < 0 {
             return Err(CustodyError::new(
                 "read",
@@ -1822,7 +1822,13 @@ pub fn read_protected_descriptor(
     }
     // Detect whether any additional bytes remain beyond the bound.
     let mut extra = [0u8; 1];
-    let n = unsafe { libc::read(fd, extra.as_mut_ptr().cast(), 1) };
+    let n = read_retrying_interrupts(fd, &mut extra);
+    if n < 0 {
+        return Err(CustodyError::new(
+            "read",
+            format!("cannot read descriptor {fd}"),
+        ));
+    }
     if n > 0 {
         return Err(CustodyError::new(
             "limit",
@@ -1835,6 +1841,19 @@ pub fn read_protected_descriptor(
             format!("descriptor content is not valid UTF-8: {e}"),
         )
     })
+}
+
+/// `read(2)` that retries `EINTR`, like `std::io::Read`: a pipe from a slow
+/// writer can block long enough for a signal without `SA_RESTART` to land.
+#[cfg(unix)]
+fn read_retrying_interrupts(fd: i32, buffer: &mut [u8]) -> isize {
+    loop {
+        let n = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+        if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        return n;
+    }
 }
 
 #[cfg(not(unix))]
