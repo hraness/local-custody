@@ -87,6 +87,16 @@ TypeScript reader, so `pbpaste | <cli> login --stdin` works in Rust CLIs; a
 regular file must still be owned by you and private, and other descriptor
 kinds are still refused.
 
+Changes in 0.9.0: the Rust sidecar accepts `generic_password_read`, a macOS
+generic-password lookup through `SecItemCopyMatching` that runs under the
+calling binary's own signing identity instead of `/usr/bin/security`. It
+takes exact `service` and `account` selectors, reads at most 4096 bytes, and
+reports `missing`, `denied`, `interaction-not-allowed`, `keychain-error`, or
+`unsupported` (off macOS) instead of a raw Security-framework status. The
+TypeScript wrapper has no fallback for the read: the point is that the
+keychain prompt names your signed binary, so there is no in-process
+substitute.
+
 The Rust crate has the same copy through
 `describe_error(code, &DescribeOptions { .. })` and `CustodyError::describe`;
 `bun run generate:error-copy` writes `rust/src/error-copy.json` from the
