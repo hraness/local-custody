@@ -689,8 +689,8 @@ export async function loadLocalCustodyRustEngine(): Promise<LocalCustodyRustEngi
       if (!Number.isSafeInteger(descriptor) || descriptor < 0) {
         throw new Error("Protected input requires a valid descriptor.");
       }
-      // The Rust engine accepts regular files only; pipes, sockets, devices,
-      // and terminals keep the TypeScript path (which accepts and reads them).
+      // This engine sends regular files to the sidecar; pipes, sockets,
+      // devices, and terminals keep the TypeScript path (which reads them).
       const metadata = fstatSync(descriptor);
       if (!metadata.isFile()) {
         fallbackNotice("unsupported-input", descriptorClass(metadata));

@@ -50,6 +50,23 @@ try {
     "node", "--input-type=module", "-e",
     `await Promise.all(${JSON.stringify(importSpecifiers)}.map((specifier) => import(specifier)))`,
   ], consumer);
+  // One class identity per error type across every subpath: an error thrown
+  // through one entrypoint passes `instanceof` against the class from another.
+  await run([
+    "node", "--input-type=module", "-e",
+    `import assert from "node:assert/strict";
+import * as root from "${packageName}";
+import * as socket from "${packageName}/control-socket";
+import * as input from "${packageName}/protected-input";
+import * as rust from "${packageName}/custody-rust";
+assert.equal(root.ControlSocketError, socket.ControlSocketError);
+assert.equal(root.ProtectedInputError, input.ProtectedInputError);
+const refused = new rust.CustodyError("mode", "detail");
+assert.ok(refused instanceof rust.CustodyError);
+try { await root.requestControlSocket({ socketPath: "/nonexistent/lc.sock", request: {}, maximumResponseBytes: 64, timeoutMs: 1000, parseResponse: (v) => v }); assert.fail("expected a refusal"); }
+catch (error) { assert.ok(error instanceof socket.ControlSocketError, String(error)); }
+console.log("error identity across subpaths passed");`,
+  ], consumer);
   // Exercise the packed runtime end to end under Node: private directory,
   // atomic publication, and a live control-socket round trip.
   await run([

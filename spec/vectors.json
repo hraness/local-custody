@@ -265,8 +265,13 @@
       "expect": { "ok": false, "code": "invalid" }
     },
     {
-      "name": "non-regular descriptor rejected",
+      "name": "sidecar protocol descriptor rejected",
       "request": { "op": "read_protected_descriptor", "fd": 0, "maximumBytes": 64 },
+      "expect": { "ok": false, "code": "kind" }
+    },
+    {
+      "name": "sidecar protocol stdin rejected",
+      "request": { "op": "read_protected_stdin", "maximumBytes": 64 },
       "expect": { "ok": false, "code": "kind" }
     },
     {

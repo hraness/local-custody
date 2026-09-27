@@ -1733,8 +1733,9 @@ const DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES: usize = 65_536;
 ///
 /// - Rejects negative descriptors.
 /// - Rejects TTYs.
-/// - On Unix, the descriptor must refer to a regular file owned by the
-///   current user with no group/other access bits.
+/// - On Unix, the descriptor must be a pipe, a socket, or a regular file. A
+///   regular file must be owned by the current user with no group/other
+///   access bits. Other kinds (directories, devices) are refused.
 /// - Reads at most `maximum_bytes` and fails if more data is available.
 /// - Returns valid UTF-8 or fails closed.
 #[cfg(unix)]
@@ -1758,7 +1759,7 @@ pub fn read_protected_descriptor(
         if is_tty {
             return Err(CustodyError::new(
                 "tty",
-                "Redirect the value from a file only you can read instead of typing it, so it stays out of your terminal history.",
+                "Pipe or redirect the value in instead of typing it, so it stays out of your terminal history.",
             ));
         }
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
@@ -1768,24 +1769,30 @@ pub fn read_protected_descriptor(
                 format!("cannot fstat descriptor {fd}"),
             ));
         }
-        if (stat.st_mode & libc::S_IFMT) != libc::S_IFREG {
-            return Err(CustodyError::new(
-                "kind",
-                "descriptor is not a regular file",
-            ));
-        }
-        if let Some(uid) = current_uid() {
-            if stat.st_uid != uid {
+        let kind = stat.st_mode & libc::S_IFMT;
+        // A pipe or socket carries what the caller piped in (`pbpaste | cli
+        // login --stdin`); it has no owner or mode of its own to check.
+        if kind == libc::S_IFIFO || kind == libc::S_IFSOCK {
+            // Accepted as is.
+        } else if kind == libc::S_IFREG {
+            if let Some(uid) = current_uid() {
+                if stat.st_uid != uid {
+                    return Err(CustodyError::new(
+                        "owner",
+                        "descriptor is not owned by current user",
+                    ));
+                }
+            }
+            if stat.st_mode & 0o077 != 0 {
                 return Err(CustodyError::new(
-                    "owner",
-                    "descriptor is not owned by current user",
+                    "mode",
+                    "descriptor allows group/other access",
                 ));
             }
-        }
-        if stat.st_mode & 0o077 != 0 {
+        } else {
             return Err(CustodyError::new(
-                "mode",
-                "descriptor allows group/other access",
+                "kind",
+                "descriptor is not a pipe, socket or regular file",
             ));
         }
     }
@@ -1800,7 +1807,7 @@ pub fn read_protected_descriptor(
     while buf.len() < maximum_bytes {
         let remaining = maximum_bytes - buf.len();
         let mut chunk = vec![0u8; remaining.min(4096)];
-        let n = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+        let n = read_retrying_interrupts(fd, &mut chunk);
         if n < 0 {
             return Err(CustodyError::new(
                 "read",
@@ -1815,7 +1822,13 @@ pub fn read_protected_descriptor(
     }
     // Detect whether any additional bytes remain beyond the bound.
     let mut extra = [0u8; 1];
-    let n = unsafe { libc::read(fd, extra.as_mut_ptr().cast(), 1) };
+    let n = read_retrying_interrupts(fd, &mut extra);
+    if n < 0 {
+        return Err(CustodyError::new(
+            "read",
+            format!("cannot read descriptor {fd}"),
+        ));
+    }
     if n > 0 {
         return Err(CustodyError::new(
             "limit",
@@ -1828,6 +1841,19 @@ pub fn read_protected_descriptor(
             format!("descriptor content is not valid UTF-8: {e}"),
         )
     })
+}
+
+/// `read(2)` that retries `EINTR`, like `std::io::Read`: a pipe from a slow
+/// writer can block long enough for a signal without `SA_RESTART` to land.
+#[cfg(unix)]
+fn read_retrying_interrupts(fd: i32, buffer: &mut [u8]) -> isize {
+    loop {
+        let n = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+        if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        return n;
+    }
 }
 
 #[cfg(not(unix))]
