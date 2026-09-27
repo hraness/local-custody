@@ -161,7 +161,8 @@ modified — and returns the same `dev`/`ino` identity.
 
 1. Input comes from an open descriptor, never argv or the environment.
 2. Terminals are refused.
-3. A regular file must be uid-owned with `mode & 0o077 === 0`.
+3. Pipes and sockets are accepted. A regular file must be uid-owned with
+   `mode & 0o077 === 0`. The Rust reader refuses other kinds with `kind`.
 4. Reads stop at EOF or the byte bound; exceeding the bound fails.
 5. Content is fatal-decoded UTF-8; the caller owns trimming and parsing.
 
@@ -183,7 +184,9 @@ behind a newline-delimited JSON protocol on stdio.
    `{path, created}` where `created` is `false` only when `createOnce`
    preserved a pre-existing target;
    `read_protected_descriptor` `{fd, maximumBytes}` → `{content}`;
-   `read_protected_stdin` `{maximumBytes}` → `{content}`;
+   `read_protected_stdin` `{maximumBytes}` → `{content}`; the sidecar
+   refuses descriptors 0–2 and `read_protected_stdin` with `kind`, because
+   its stdio carries this protocol;
    `control_socket_request` `{socketPath, request, maximumResponseBytes,
    timeoutMs}` → the socket's raw response value.
 3. `exactMode` is an octal **string** (for example `"0600"`); byte bounds are

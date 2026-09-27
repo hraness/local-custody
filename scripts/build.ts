@@ -17,6 +17,10 @@ const result = await Bun.build({
   format: "esm",
   outdir: "dist",
   target: "node",
+  // Shared modules become chunks, so an error class has one identity across
+  // subpaths: `instanceof` works whichever entry created or catches it.
+  splitting: true,
+  naming: { chunk: "chunk-[hash].[ext]" },
 });
 if (!result.success) {
   for (const log of result.logs) console.error(log);

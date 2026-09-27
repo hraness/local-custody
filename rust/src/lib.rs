@@ -1733,8 +1733,9 @@ const DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES: usize = 65_536;
 ///
 /// - Rejects negative descriptors.
 /// - Rejects TTYs.
-/// - On Unix, the descriptor must refer to a regular file owned by the
-///   current user with no group/other access bits.
+/// - On Unix, the descriptor must be a pipe, a socket, or a regular file. A
+///   regular file must be owned by the current user with no group/other
+///   access bits. Other kinds (directories, devices) are refused.
 /// - Reads at most `maximum_bytes` and fails if more data is available.
 /// - Returns valid UTF-8 or fails closed.
 #[cfg(unix)]
@@ -1768,24 +1769,30 @@ pub fn read_protected_descriptor(
                 format!("cannot fstat descriptor {fd}"),
             ));
         }
-        if (stat.st_mode & libc::S_IFMT) != libc::S_IFREG {
-            return Err(CustodyError::new(
-                "kind",
-                "descriptor is not a regular file",
-            ));
-        }
-        if let Some(uid) = current_uid() {
-            if stat.st_uid != uid {
+        let kind = stat.st_mode & libc::S_IFMT;
+        // A pipe or socket carries what the caller piped in (`pbpaste | cli
+        // login --stdin`); it has no owner or mode of its own to check.
+        if kind == libc::S_IFIFO || kind == libc::S_IFSOCK {
+            // Accepted as is.
+        } else if kind == libc::S_IFREG {
+            if let Some(uid) = current_uid() {
+                if stat.st_uid != uid {
+                    return Err(CustodyError::new(
+                        "owner",
+                        "descriptor is not owned by current user",
+                    ));
+                }
+            }
+            if stat.st_mode & 0o077 != 0 {
                 return Err(CustodyError::new(
-                    "owner",
-                    "descriptor is not owned by current user",
+                    "mode",
+                    "descriptor allows group/other access",
                 ));
             }
-        }
-        if stat.st_mode & 0o077 != 0 {
+        } else {
             return Err(CustodyError::new(
-                "mode",
-                "descriptor allows group/other access",
+                "kind",
+                "descriptor is not a pipe, socket or regular file",
             ));
         }
     }

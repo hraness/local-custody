@@ -76,8 +76,16 @@ deleting files. For terminal input, pass `inputExample` (such as
 Behavior changes in 0.7.0: a request to a socket that doesn't exist fails with
 `ControlSocketError` code `control-unavailable` (the original `ENOENT` is its
 `cause`), and reading protected input from a terminal says to pipe or redirect
-the value in. Each subpath is bundled separately, so check `error.code` or
-`error.name` rather than `instanceof` across entrypoints.
+the value in.
+
+Changes in 0.8.0: each error class has one identity across entrypoints, so an
+error thrown through `@hraness/local-custody/control-socket` passes
+`instanceof` against the class imported from the package root (the build
+shares modules as chunks instead of copying them into each subpath). The Rust
+crate's `read_protected_descriptor` accepts a pipe or socket, like the
+TypeScript reader, so `pbpaste | <cli> login --stdin` works in Rust CLIs; a
+regular file must still be owned by you and private, and other descriptor
+kinds are still refused.
 
 The Rust crate has the same copy through
 `describe_error(code, &DescribeOptions { .. })` and `CustodyError::describe`;

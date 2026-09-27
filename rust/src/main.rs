@@ -77,7 +77,10 @@ enum Request {
     },
     #[serde(rename = "read_protected_stdin")]
     ReadProtectedStdin {
+        // Parsed so malformed requests still fail as `invalid-request`; the op
+        // itself is refused (stdin carries the protocol).
         #[serde(rename = "maximumBytes")]
+        #[allow(dead_code)]
         maximum_bytes: Option<usize>,
     },
     #[serde(rename = "control_socket_request")]
@@ -250,14 +253,25 @@ fn dispatch(req: Request) -> Result<serde_json::Value, (String, String)> {
             Ok(json!({ "path": published.path, "created": published.created }))
         }
         Request::ReadProtectedDescriptor { fd, maximum_bytes } => {
+            // Descriptors 0-2 carry this protocol (a pipe the library would
+            // now accept), so they are never protected input here.
+            if (0..=2).contains(&fd) {
+                return Err((
+                    "kind".to_string(),
+                    "sidecar stdio carries the protocol, not protected input".to_string(),
+                ));
+            }
             let content = local_custody::read_protected_descriptor(fd, maximum_bytes)
                 .map_err(|e| (e.code, e.message))?;
             Ok(json!({ "content": content }))
         }
-        Request::ReadProtectedStdin { maximum_bytes } => {
-            let content = local_custody::read_protected_stdin(maximum_bytes)
-                .map_err(|e| (e.code, e.message))?;
-            Ok(json!({ "content": content }))
+        Request::ReadProtectedStdin { .. } => {
+            // The sidecar's stdin carries this protocol, so it is never
+            // protected input: reading it would consume later requests.
+            Err((
+                "kind".to_string(),
+                "sidecar stdin carries the protocol, not protected input".to_string(),
+            ))
         }
         Request::ControlSocket {
             socket_path,
