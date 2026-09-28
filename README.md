@@ -166,9 +166,11 @@ atomically and can set its owner and mode, but it does not reject a file with
 the wrong owner or refuse a symbolic link. An OS keychain, for example through
 [@napi-rs/keyring](https://github.com/Brooooooklyn/keyring-node), encrypts
 secrets at rest. Choose a keychain when that matters, because this package keeps
-files private through ownership and mode, without encryption. local-custody
-also covers the local control socket and descriptor-only secret input. Checked
-on 2026-09-28.
+files private through ownership and mode, without encryption. On macOS the
+Rust sidecar can read an existing keychain item through
+`generic_password_read`, but the package does not store secrets in a keychain.
+local-custody also covers the local control socket and descriptor-only secret
+input. Checked on 2026-09-28.
 
 ## Development
 
