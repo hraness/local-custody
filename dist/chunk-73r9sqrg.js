@@ -4,8 +4,8 @@ import { isatty } from "node:tty";
 var DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES = 65536;
 
 class ProtectedInputError extends Error {
-  code;
   name = "ProtectedInputError";
+  code;
   constructor(code, message) {
     super(message);
     this.code = code;

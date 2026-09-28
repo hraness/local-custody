@@ -9,7 +9,7 @@ import {
   attachControlSocket,
   listenControlSocket,
   requestControlSocket
-} from "./chunk-k2mgjyx4.js";
+} from "./chunk-e5csbmsf.js";
 import {
   PRIVATE_DIRECTORY_MODE,
   PRIVATE_FILE_MODE,
@@ -26,7 +26,7 @@ import {
   ProtectedInputError,
   readProtectedDescriptor,
   readProtectedStdin
-} from "./chunk-8gyk2127.js";
+} from "./chunk-73r9sqrg.js";
 // src/describe.ts
 var CUSTODY_ERROR_COPY = Object.freeze({
   "service-not-running": Object.freeze({

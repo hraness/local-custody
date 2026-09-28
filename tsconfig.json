@@ -18,6 +18,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "useUnknownInCatchVariables": true,
+    "erasableSyntaxOnly": true,
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "skipLibCheck": true,

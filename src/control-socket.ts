@@ -22,8 +22,10 @@ export type ControlSocketErrorCode =
 /** A control request failure with a stable `code`. Messages are unchanged from earlier releases. */
 export class ControlSocketError extends Error {
   override readonly name = "ControlSocketError";
-  constructor(readonly code: ControlSocketErrorCode, message: string, options?: Readonly<{ cause?: unknown }>) {
+  readonly code: ControlSocketErrorCode;
+  constructor(code: ControlSocketErrorCode, message: string, options?: Readonly<{ cause?: unknown }>) {
     super(message, options);
+    this.code = code;
   }
 }
 

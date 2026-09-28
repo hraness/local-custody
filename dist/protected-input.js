@@ -4,7 +4,7 @@ import {
   ProtectedInputError,
   readProtectedDescriptor,
   readProtectedStdin
-} from "./chunk-8gyk2127.js";
+} from "./chunk-73r9sqrg.js";
 export {
   readProtectedStdin,
   readProtectedDescriptor,
