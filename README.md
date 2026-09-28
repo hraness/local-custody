@@ -97,6 +97,12 @@ TypeScript wrapper has no fallback for the read: the point is that the
 keychain prompt names your signed binary, so there is no in-process
 substitute.
 
+Changes in 0.9.1: the shipped TypeScript sources no longer declare
+constructor parameter properties, so consumers whose compiler policy sets
+`erasableSyntaxOnly` can typecheck the package's `types` entries cleanly.
+Emitted output is unchanged, and the repository's own typecheck now enforces
+the flag so the published sources cannot regress.
+
 The Rust crate has the same copy through
 `describe_error(code, &DescribeOptions { .. })` and `CustodyError::describe`;
 `bun run generate:error-copy` writes `rust/src/error-copy.json` from the
