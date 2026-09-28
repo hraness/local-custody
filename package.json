@@ -19,11 +19,16 @@
     "url": "https://github.com/hraness/local-custody/issues"
   },
   "keywords": [
-    "custody",
-    "unix-socket",
-    "local-ipc",
+    "atomic-write",
+    "cli",
+    "credentials",
+    "file-permissions",
+    "ipc",
+    "private-files",
+    "secrets",
     "security",
-    "typescript"
+    "typescript",
+    "unix-socket"
   ],
   "exports": {
     ".": {

@@ -159,6 +159,19 @@ atomic publication, descriptor checks, nonblocking opens, canonical path
 equality, and control sockets are unsupported. The package does not publish
 or select a Windows sidecar.
 
+## Compared with other tools
+
+[write-file-atomic](https://github.com/npm/write-file-atomic) replaces a file
+atomically and can set its owner and mode, but it does not reject a file with
+the wrong owner or refuse a symbolic link. An OS keychain, for example through
+[@napi-rs/keyring](https://github.com/Brooooooklyn/keyring-node), encrypts
+secrets at rest. Choose a keychain when that matters, because this package keeps
+files private through ownership and mode, without encryption. On macOS the
+Rust sidecar can read an existing keychain item through
+`generic_password_read`, but the package does not store secrets in a keychain.
+local-custody also covers the local control socket and descriptor-only secret
+input. Checked on 2026-09-28.
+
 ## Development
 
 Bun 1.3.14. `bun run check` is the required check: portfolio inventory, lint,
@@ -168,3 +181,7 @@ live control-socket round trip under Node.
 Releases are immutable `v*` tags. The release workflow reruns the full check,
 publishes a GitHub Release, and then publishes the same version to npm through
 the tag-only `npm-release` environment and OIDC trusted publishing.
+
+## License
+
+MIT. Maintained by [Hraness](https://hraness.com).
