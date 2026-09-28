@@ -50,31 +50,43 @@ const publishNamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,126}$/u;
 
 export class CustodySidecarNotFoundError extends Error {
   override readonly name: "CustodySidecarNotFoundError";
+  readonly platform: string;
+  readonly arch: string;
+  readonly binaryPath: string;
   constructor(
-    readonly platform: string,
-    readonly arch: string,
-    readonly binaryPath: string,
+    platform: string,
+    arch: string,
+    binaryPath: string,
   ) {
     super(`local-custody sidecar not found for ${platform}-${arch} at ${binaryPath}`);
+    this.platform = platform;
+    this.arch = arch;
+    this.binaryPath = binaryPath;
     this.name = "CustodySidecarNotFoundError";
   }
 }
 
 export class CustodySidecarTimeoutError extends Error {
   override readonly name: "CustodySidecarTimeoutError";
-  constructor(readonly timeoutMs: number) {
+  readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
     super(`local-custody sidecar did not respond within ${timeoutMs} ms`);
+    this.timeoutMs = timeoutMs;
     this.name = "CustodySidecarTimeoutError";
   }
 }
 
 export class CustodySidecarProtocolError extends Error {
   override readonly name: "CustodySidecarProtocolError";
+  readonly reason: unknown;
+  readonly stdout: string;
   constructor(
-    readonly reason: unknown,
-    readonly stdout: string,
+    reason: unknown,
+    stdout: string,
   ) {
     super(`local-custody sidecar produced unparseable output: ${String(reason)}`);
+    this.reason = reason;
+    this.stdout = stdout;
     this.name = "CustodySidecarProtocolError";
   }
 }
@@ -85,11 +97,15 @@ export class CustodySidecarProtocolError extends Error {
  */
 export class CustodyError extends Error {
   override readonly name: "CustodyError";
+  readonly code: string;
+  readonly details: Readonly<Record<string, unknown>>;
   constructor(
-    readonly code: string,
-    readonly details: Readonly<Record<string, unknown>>,
+    code: string,
+    details: Readonly<Record<string, unknown>>,
   ) {
     super(`local-custody sidecar op failed: ${code}`);
+    this.code = code;
+    this.details = details;
     this.name = "CustodyError";
   }
 }

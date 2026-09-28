@@ -8,8 +8,10 @@ export type ProtectedInputErrorCode = "protected-terminal" | "protected-unsafe-f
 /** A protected-input refusal with a stable `code` for `describeCustodyError`. */
 export class ProtectedInputError extends Error {
   override readonly name = "ProtectedInputError";
-  constructor(readonly code: ProtectedInputErrorCode, message: string) {
+  readonly code: ProtectedInputErrorCode;
+  constructor(code: ProtectedInputErrorCode, message: string) {
     super(message);
+    this.code = code;
   }
 }
 

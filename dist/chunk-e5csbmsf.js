@@ -9,8 +9,8 @@ import { chmod, unlink } from "node:fs/promises";
 import { createServer, connect } from "node:net";
 import { dirname } from "node:path";
 class ControlSocketError extends Error {
-  code;
   name = "ControlSocketError";
+  code;
   constructor(code, message, options) {
     super(message, options);
     this.code = code;

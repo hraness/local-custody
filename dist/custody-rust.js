@@ -6,7 +6,7 @@ import {
   attachControlSocket,
   listenControlSocket,
   requestControlSocket
-} from "./chunk-k2mgjyx4.js";
+} from "./chunk-e5csbmsf.js";
 import {
   assertOwnedPath,
   ensurePrivateDirectory,
@@ -16,7 +16,7 @@ import {
   DEFAULT_PROTECTED_INPUT_MAXIMUM_BYTES,
   readProtectedDescriptor,
   readProtectedStdin
-} from "./chunk-8gyk2127.js";
+} from "./chunk-73r9sqrg.js";
 import {
   emitLocalCustodyFallback
 } from "./chunk-np3mgd4s.js";
@@ -36,10 +36,10 @@ var MAXIMUM_CONTROL_TIMEOUT_MS = 3600000;
 var publishNamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,126}$/u;
 
 class CustodySidecarNotFoundError extends Error {
+  name;
   platform;
   arch;
   binaryPath;
-  name;
   constructor(platform, arch, binaryPath) {
     super(`local-custody sidecar not found for ${platform}-${arch} at ${binaryPath}`);
     this.platform = platform;
@@ -50,8 +50,8 @@ class CustodySidecarNotFoundError extends Error {
 }
 
 class CustodySidecarTimeoutError extends Error {
-  timeoutMs;
   name;
+  timeoutMs;
   constructor(timeoutMs) {
     super(`local-custody sidecar did not respond within ${timeoutMs} ms`);
     this.timeoutMs = timeoutMs;
@@ -60,9 +60,9 @@ class CustodySidecarTimeoutError extends Error {
 }
 
 class CustodySidecarProtocolError extends Error {
+  name;
   reason;
   stdout;
-  name;
   constructor(reason, stdout) {
     super(`local-custody sidecar produced unparseable output: ${String(reason)}`);
     this.reason = reason;
@@ -72,9 +72,9 @@ class CustodySidecarProtocolError extends Error {
 }
 
 class CustodyError extends Error {
+  name;
   code;
   details;
-  name;
   constructor(code, details) {
     super(`local-custody sidecar op failed: ${code}`);
     this.code = code;
