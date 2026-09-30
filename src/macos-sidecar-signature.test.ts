@@ -35,6 +35,7 @@ test("verifies fixed Developer ID identity using a bounded system verifier", () 
   expect(command).toBe("/usr/bin/codesign");
   expect(args).toContain("--strict");
   expect(args).toContain("--all-architectures");
+  expect(String(args)).toContain("--test-requirement,=anchor apple generic");
   expect(String(args)).toContain('identifier "dev.hraness.local-custody"');
   expect(String(args)).toContain('subject.OU] = "8AAP53VTW3"');
   expect(String(args)).toContain("1.2.840.113635.100.6.1.13");
@@ -95,3 +96,35 @@ test("asynchronous verifier rejects wrong team or unsigned helpers", async () =>
   restorers.push(() => mock.mockRestore());
   await assert.rejects(verifyMacSidecar(binary), MacOsSidecarSignatureError);
 });
+
+
+test.skipIf(process.platform !== "darwin")("real codesign parses literal requirements and rejects an ad-hoc publisher", async () => {
+  const source = join(directory, "native.c");
+  writeFileSync(source, "int main(void) { return 0; }\n");
+  const environment = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C", LC_ALL: "C" };
+  const compile = childProcess.spawnSync("/usr/bin/clang", [source, "-o", binary], {
+    env: environment, encoding: "utf8", timeout: 30_000,
+  });
+  assert.equal(compile.status, 0, compile.stderr);
+  const identifier = "dev.hraness.local-custody";
+  const signed = childProcess.spawnSync("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", identifier,
+    "--requirements", `=designated => identifier "${identifier}"`, binary], {
+    env: environment, encoding: "utf8", timeout: 10_000,
+  });
+  assert.equal(signed.status, 0, signed.stderr);
+  const positive = childProcess.spawnSync("/usr/bin/codesign", ["--verify", "--strict", "--test-requirement",
+    `=identifier "${identifier}"`, binary], { env: environment, encoding: "utf8", timeout: 10_000 });
+  assert.equal(positive.status, 0, positive.stderr);
+  const observed = spyOn(childProcess, "spawnSync");
+  restorers.push(() => observed.mockRestore());
+  assert.throws(() => verifyMacSidecarSync(binary), MacOsSidecarSignatureError);
+  const [command, args] = observed.mock.calls[0]!;
+  assert.ok(Array.isArray(args));
+  const diagnostic = childProcess.spawnSync(command, args.map(value => String(value)), {
+    env: environment, encoding: "utf8", timeout: 10_000,
+  });
+  assert.notEqual(diagnostic.status, 0);
+  assert.match(diagnostic.stderr, /failed to satisfy specified code requirement/);
+  assert.doesNotMatch(diagnostic.stderr, /cannot read|No such file|syntax error/i);
+  await assert.rejects(verifyMacSidecar(binary), MacOsSidecarSignatureError);
+}, 60_000);
