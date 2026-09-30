@@ -35,6 +35,7 @@ import {
   readProtectedStdin as tsReadProtectedStdin,
 } from "./protected-input.js";
 import { emitLocalCustodyFallback } from "./rust-fallback.js";
+import { assertVerifiedMacSidecar, verifyMacSidecar } from "./macos-sidecar-signature.js";
 
 const SPAWN_TIMEOUT_MS = 120_000;
 const ENVELOPE_SLACK_BYTES = 16 * 1024;
@@ -150,8 +151,10 @@ export function sidecarBinaryPath(
 // Bounded spawn protocol: one request line in, exactly one response line out
 // ---------------------------------------------------------------------------
 
+type SidecarTarget = Readonly<{ path: string; verifyAppleIdentity: boolean }>;
+
 async function runSidecar(
-  binaryPath: string,
+  target: SidecarTarget,
   requestJson: string,
   maximumResponseBytes: number,
   sharedDescriptor?: number,
@@ -159,7 +162,11 @@ async function runSidecar(
   const stdio: StdioOptions = sharedDescriptor === undefined
     ? ["pipe", "pipe", "pipe"]
     : ["pipe", "pipe", "pipe", sharedDescriptor];
-  const child = spawn(binaryPath, [], { stdio });
+  if (target.verifyAppleIdentity) {
+    const identity = await verifyMacSidecar(target.path);
+    assertVerifiedMacSidecar(target.path, identity);
+  }
+  const child = spawn(target.path, [], { stdio });
   const { stdin, stdout, stderr } = child;
   if (stdin === null || stdout === null || stderr === null) {
     child.kill("SIGKILL");
@@ -256,7 +263,7 @@ function parseSidecarResponse(stdout: string): unknown {
 }
 
 async function runRequest(
-  binaryPath: string,
+  binaryPath: SidecarTarget,
   request: Record<string, unknown>,
   maximumRequestBytes: number,
   maximumResponseBytes: number,
@@ -299,7 +306,7 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/u;
 // Rust-backed operations
 // ---------------------------------------------------------------------------
 
-async function rustEnsurePrivateDirectory(binary: string, path: string): Promise<string> {
+async function rustEnsurePrivateDirectory(binary: SidecarTarget, path: string): Promise<string> {
   const absolute = resolve(path);
   const parsed = await runRequest(
     binary,
@@ -320,7 +327,7 @@ async function rustEnsurePrivateDirectory(binary: string, path: string): Promise
 }
 
 async function rustAssertOwnedPath(
-  binary: string,
+  binary: SidecarTarget,
   path: string,
   expectation: OwnedPathExpectation,
 ): Promise<OwnedPathIdentity> {
@@ -347,7 +354,7 @@ async function rustAssertOwnedPath(
 }
 
 async function rustReadOwnedFileStable(
-  binary: string,
+  binary: SidecarTarget,
   path: string,
   maximumBytes: number,
   expectation: StableFileExpectation,
@@ -424,7 +431,7 @@ function assertPublishName(name: string): void {
 }
 
 async function rustAtomicPublish(
-  binary: string,
+  binary: SidecarTarget,
   directory: string,
   name: string,
   content: string | Buffer,
@@ -455,7 +462,7 @@ async function rustAtomicPublish(
 }
 
 async function rustReadProtectedDescriptor(
-  binary: string,
+  binary: SidecarTarget,
   descriptor: number,
   maximumBytes: number,
 ): Promise<string> {
@@ -476,7 +483,7 @@ async function rustReadProtectedDescriptor(
 }
 
 async function rustRequestControlSocket<T>(
-  binary: string,
+  binary: SidecarTarget,
   options: ControlSocketRequestOptions<T>,
 ): Promise<T> {
   const { socketPath, maximumResponseBytes, timeoutMs } = options;
@@ -560,7 +567,7 @@ export async function readGenericPassword(
   validateGenericPasswordSelector(service, "service");
   validateGenericPasswordSelector(account, "account");
   const parsed = await runRequest(
-    binaryPath,
+    { path: binaryPath, verifyAppleIdentity: false },
     { op: "generic_password_read", service, account },
     FIXED_REQUEST_BYTES,
     base64Bound(GENERIC_PASSWORD_VALUE_MAX_BYTES) + ENVELOPE_SLACK_BYTES,
@@ -677,7 +684,8 @@ function typescriptEngine(): LocalCustodyRustEngine {
  * Load the custody engine that prefers the packaged Rust sidecar binary and
  * falls back to the TypeScript implementation operation by operation.
  *
- * The binary is probed once at load time; when it is absent every operation
+ * The binary is probed at load time, and the default Mac helper is verified
+ * before each native launch. When it is absent or untrusted every operation
  * delegates to TypeScript directly. When it is present, each operation runs
  * through the bounded JSON-lines sidecar protocol unless the input shape is
  * one the Rust engine cannot faithfully reproduce (a `beforeCommit` hook,
@@ -687,10 +695,15 @@ function typescriptEngine(): LocalCustodyRustEngine {
  */
 export async function loadLocalCustodyRustEngine(): Promise<LocalCustodyRustEngine> {
   let binaryPath: string | null = null;
+  let verifyAppleIdentity = false;
   try {
     const { platform, arch } = currentPlatformArch();
     const candidate = sidecarBinaryPath(platform, arch);
-    if ((await stat(candidate).catch(() => null))?.isFile()) binaryPath = candidate;
+    verifyAppleIdentity = platform === "darwin" && !process.env.HRANESS_LOCAL_CUSTODY_CLI_PATH;
+    if ((await stat(candidate).catch(() => null))?.isFile()) {
+      if (verifyAppleIdentity) await verifyMacSidecar(candidate);
+      binaryPath = candidate;
+    }
   } catch {
     binaryPath = null;
   }
@@ -699,7 +712,7 @@ export async function loadLocalCustodyRustEngine(): Promise<LocalCustodyRustEngi
     fallbackNotice("load-failed");
     return typescriptEngine();
   }
-  const binary = binaryPath;
+  const binary: SidecarTarget = { path: binaryPath, verifyAppleIdentity };
 
   return {
     implementation: "rust-sidecar",

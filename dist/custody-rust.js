@@ -27,6 +27,74 @@ import { fstatSync } from "node:fs";
 import { lstat, realpath, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// src/macos-sidecar-signature.ts
+import { execFile, spawnSync } from "node:child_process";
+import { lstatSync } from "node:fs";
+var APPLE_TEAM_ID = "8AAP53VTW3";
+var APPLE_IDENTIFIER = "dev.hraness.local-custody";
+var REQUIREMENT = `anchor apple generic and identifier "${APPLE_IDENTIFIER}" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "${APPLE_TEAM_ID}"`;
+var CODESIGN = "/usr/bin/codesign";
+var TIMEOUT_MS = 1e4;
+var VERIFIER_ENV = Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C", LC_ALL: "C" });
+
+class MacOsSidecarSignatureError extends Error {
+  name = "MacOsSidecarSignatureError";
+  constructor() {
+    super("The packaged native helper does not have the required Apple Developer ID signature.");
+  }
+}
+function identity(path) {
+  try {
+    const file = lstatSync(path, { bigint: true });
+    if (!file.isFile() || file.size < 1n || file.size > 134217728n || (file.mode & 0o111n) === 0n) {
+      throw new MacOsSidecarSignatureError;
+    }
+    return Object.freeze({
+      dev: file.dev,
+      ino: file.ino,
+      size: file.size,
+      mode: file.mode,
+      mtimeNs: file.mtimeNs,
+      ctimeNs: file.ctimeNs
+    });
+  } catch {
+    throw new MacOsSidecarSignatureError;
+  }
+}
+function assertVerifiedMacSidecar(path, expected) {
+  const actual = identity(path);
+  if (actual.dev !== expected.dev || actual.ino !== expected.ino || actual.size !== expected.size || actual.mode !== expected.mode || actual.mtimeNs !== expected.mtimeNs || actual.ctimeNs !== expected.ctimeNs) {
+    throw new MacOsSidecarSignatureError;
+  }
+}
+function argumentsFor(path) {
+  return ["--verify", "--strict", "--all-architectures", "--test-requirement", REQUIREMENT, path];
+}
+async function verifyMacSidecar(path) {
+  const before = identity(path);
+  await new Promise((resolve, reject) => {
+    try {
+      execFile(CODESIGN, argumentsFor(path), {
+        env: VERIFIER_ENV,
+        timeout: TIMEOUT_MS,
+        killSignal: "SIGKILL",
+        maxBuffer: 16384
+      }, (error) => {
+        if (error !== null)
+          reject(new MacOsSidecarSignatureError);
+        else
+          resolve();
+      });
+    } catch {
+      reject(new MacOsSidecarSignatureError);
+    }
+  });
+  assertVerifiedMacSidecar(path, before);
+  return before;
+}
+
+// src/custody-rust.ts
 var SPAWN_TIMEOUT_MS = 120000;
 var ENVELOPE_SLACK_BYTES = 16 * 1024;
 var FIXED_REQUEST_BYTES = 16 * 1024;
@@ -105,9 +173,13 @@ function sidecarBinaryPath(platform = currentPlatformArch().platform, arch = cur
     return resolve(override);
   return resolve(artifactBaseDirectory(), `${platform}-${arch}`, "local-custody");
 }
-async function runSidecar(binaryPath, requestJson, maximumResponseBytes, sharedDescriptor) {
+async function runSidecar(target, requestJson, maximumResponseBytes, sharedDescriptor) {
   const stdio = sharedDescriptor === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", sharedDescriptor];
-  const child = spawn(binaryPath, [], { stdio });
+  if (target.verifyAppleIdentity) {
+    const identity2 = await verifyMacSidecar(target.path);
+    assertVerifiedMacSidecar(target.path, identity2);
+  }
+  const child = spawn(target.path, [], { stdio });
   const { stdin, stdout, stderr } = child;
   if (stdin === null || stdout === null || stderr === null) {
     child.kill("SIGKILL");
@@ -364,7 +436,7 @@ function validateGenericPasswordSelector(value, field) {
 async function readGenericPassword(binaryPath, service, account) {
   validateGenericPasswordSelector(service, "service");
   validateGenericPasswordSelector(account, "account");
-  const parsed = await runRequest(binaryPath, { op: "generic_password_read", service, account }, FIXED_REQUEST_BYTES, base64Bound(GENERIC_PASSWORD_VALUE_MAX_BYTES) + ENVELOPE_SLACK_BYTES);
+  const parsed = await runRequest({ path: binaryPath, verifyAppleIdentity: false }, { op: "generic_password_read", service, account }, FIXED_REQUEST_BYTES, base64Bound(GENERIC_PASSWORD_VALUE_MAX_BYTES) + ENVELOPE_SLACK_BYTES);
   const candidate = parsed;
   if (!isRecord(parsed) || typeof candidate.contentBase64 !== "string" || !BASE64_PATTERN.test(candidate.contentBase64)) {
     throw new CustodySidecarProtocolError(new Error("invalid generic_password_read fields"), JSON.stringify(parsed));
@@ -419,11 +491,16 @@ function typescriptEngine() {
 }
 async function loadLocalCustodyRustEngine() {
   let binaryPath = null;
+  let verifyAppleIdentity = false;
   try {
     const { platform, arch } = currentPlatformArch();
     const candidate = sidecarBinaryPath(platform, arch);
-    if ((await stat(candidate).catch(() => null))?.isFile())
+    verifyAppleIdentity = platform === "darwin" && !process.env.HRANESS_LOCAL_CUSTODY_CLI_PATH;
+    if ((await stat(candidate).catch(() => null))?.isFile()) {
+      if (verifyAppleIdentity)
+        await verifyMacSidecar(candidate);
       binaryPath = candidate;
+    }
   } catch {
     binaryPath = null;
   }
@@ -431,7 +508,7 @@ async function loadLocalCustodyRustEngine() {
     fallbackNotice("load-failed");
     return typescriptEngine();
   }
-  const binary = binaryPath;
+  const binary = { path: binaryPath, verifyAppleIdentity };
   return {
     implementation: "rust-sidecar",
     ensurePrivateDirectory: (path) => rustOrTs(() => rustEnsurePrivateDirectory(binary, path), () => ensurePrivateDirectory(path)),
