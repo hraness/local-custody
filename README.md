@@ -17,18 +17,18 @@ bun add @hraness/local-custody
 ```
 
 The npm package includes a prebuilt Rust sidecar for Linux x64 and macOS arm64
-and x64.
+and x64. The published TypeScript types support `erasableSyntaxOnly`.
 
 ## Entrypoints
 
 | Subpath | Exports |
 |---|---|
-| `@hraness/local-custody` | Every stable export below, plus `describeCustodyError` |
+| `@hraness/local-custody` | The file, socket, and protected-input exports below, plus `describeCustodyError` |
 | `/private-paths` | `ensurePrivateDirectory`, `assertOwnedPath`, `assertOwnedPathSync`, `readPrivateFile`, `readOwnedFileStable`, `readOwnedFileStableSync` |
 | `/atomic-publish` | `publishPrivateFile`, `createPrivateFileOnce`, `createPrivateFileOnceSync` |
 | `/control-socket` | `listenControlSocket`, `attachControlSocket`, `requestControlSocket`, `ControlSocketError` |
 | `/protected-input` | `readProtectedDescriptor`, `readProtectedStdin`, `ProtectedInputError` |
-| `/custody-rust` | `loadLocalCustodyRustEngine`, which prefers the Rust sidecar and falls back to TypeScript |
+| `/custody-rust` | `loadLocalCustodyRustEngine`, which prefers the Rust sidecar and falls back to TypeScript; `readGenericPassword`, for macOS Keychain reads without a fallback |
 | `/artifact-manifest` | `loadLocalCustodyArtifactManifest`, `findLocalCustodyArtifact`, which read the manifest of shipped sidecar binaries |
 | `/rust-fallback` | `emitLocalCustodyFallback`, which prints a short notice when an operation falls back to TypeScript |
 
@@ -73,35 +73,14 @@ step. Paths and codes never appear in the text, and the copy never suggests
 deleting files. For terminal input, pass `inputExample` (such as
 `pbpaste | ghostget login --stdin`) to show an exact command.
 
-Behavior changes in 0.7.0: a request to a socket that doesn't exist fails with
+A request to a socket that doesn't exist fails with
 `ControlSocketError` code `control-unavailable` (the original `ENOENT` is its
 `cause`), and reading protected input from a terminal says to pipe or redirect
 the value in.
 
-Changes in 0.8.0: each error class has one identity across entrypoints, so an
+Each error class has one identity across entrypoints, so an
 error thrown through `@hraness/local-custody/control-socket` passes
-`instanceof` against the class imported from the package root (the build
-shares modules as chunks instead of copying them into each subpath). The Rust
-crate's `read_protected_descriptor` accepts a pipe or socket, like the
-TypeScript reader, so `pbpaste | <cli> login --stdin` works in Rust CLIs; a
-regular file must still be owned by you and private, and other descriptor
-kinds are still refused.
-
-Changes in 0.9.0: the Rust sidecar accepts `generic_password_read`, a macOS
-generic-password lookup through `SecItemCopyMatching` that runs under the
-calling binary's own signing identity instead of `/usr/bin/security`. It
-takes exact `service` and `account` selectors, reads at most 4096 bytes, and
-reports `missing`, `denied`, `interaction-not-allowed`, `keychain-error`, or
-`unsupported` (off macOS) instead of a raw Security-framework status. The
-TypeScript wrapper has no fallback for the read: the point is that the
-keychain prompt names your signed binary, so there is no in-process
-substitute.
-
-Changes in 0.9.1: the shipped TypeScript sources no longer declare
-constructor parameter properties, so consumers whose compiler policy sets
-`erasableSyntaxOnly` can typecheck the package's `types` entries cleanly.
-Emitted output is unchanged, and the repository's own typecheck now enforces
-the flag so the published sources cannot regress.
+`instanceof` against the class imported from the package root.
 
 The Rust crate has the same copy through
 `describe_error(code, &DescribeOptions { .. })` and `CustodyError::describe`;
@@ -125,14 +104,30 @@ Operations the sidecar supports run through its JSON-lines protocol. These
 stay in TypeScript because the Rust engine cannot reproduce them exactly: a
 `beforeCommit` hook, directory checks without a link limit, protected input
 from stdin or a non-regular file, and the control-socket server lifecycle.
-When that happens, the package prints a short, sanitized notice on stderr. If
-the binary is missing or misbehaves, every operation falls back to TypeScript.
-Domain failures surface as `CustodyError` with the sidecar's failure `code`.
+The engine uses TypeScript when the sidecar cannot load or an operation has a
+transport or protocol failure, and prints a short, sanitized notice on stderr.
+Domain failures surface as `CustodyError` with the sidecar's failure `code`;
+domain errors and invalid input do not trigger a fallback. The separate
+`readGenericPassword` function has no TypeScript fallback.
 
 `HRANESS_LOCAL_CUSTODY_CLI_PATH` overrides the staged binary path (for
 development or a sidecar delivered separately). Rebuild the host artifact with
 `bun run rust:build:artifacts`; `bun run rust:build:manifest` regenerates the
 manifest for staged targets.
+
+### Read a macOS Keychain item
+
+`readGenericPassword(binaryPath, service, account)` reads one generic-password
+item through a product-selected signed helper. The sidecar's
+`generic_password_read` operation uses `SecItemCopyMatching`, so the Keychain
+request is attributed to that helper's signing identity. macOS controls access
+and any permission prompt.
+
+Both selectors must be 1–256 UTF-8 bytes without control characters. The read
+returns a `Uint8Array` of at most 4096 bytes. Failure codes include `missing`, `denied`,
+`interaction-not-allowed`, `keychain-error`, `limit`, and `unsupported` off
+macOS. There is no TypeScript fallback because it would change which binary
+requests access. See the [protocol reference](spec/custody.md#generic-password-read).
 
 ### Rust crate
 
@@ -149,6 +144,10 @@ local-custody = { git = "https://github.com/hraness/local-custody", rev = "<sha>
 
 Descriptor checks and the commit guard work within one process, so the
 sidecar protocol does not include them. See `spec/custody.md`.
+
+The crate's `read_protected_descriptor` accepts pipes and sockets, so
+`pbpaste | <cli> login --stdin` works in Rust CLIs. A regular file must be owned
+by you and private; other descriptor kinds are refused.
 
 ### Windows
 
