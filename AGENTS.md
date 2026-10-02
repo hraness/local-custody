@@ -32,7 +32,7 @@
 - Deliver changes to `main` through a current-head pull request with `Required` green. Never force-push.
 - Pin Hraness dependencies to reviewed immutable releases or full commits. Never connect repositories through sibling paths, Git submodules, or coordinated `main` assumptions.
 - Keep released behavior stable; the checked `dist/` output is the consumed artifact. Run `bun run check` before handoff and keep generated output in sync.
-- Bump `package.json` version and tag `v*` for releases; tags are immutable and the release workflow re-verifies the full gate.
+- Bump `package.json` version for releases; once CI passes on `main`, `.github/workflows/auto-tag.yml` creates the `v*` tag (a manual tag still works). Tags are immutable and the release workflow re-verifies the full gate.
 - Treat this repository as the complete public project. Public files may refer only to its public package, paths, commands, and contract values.
 
 <!-- hraness-public-copy:start -->
