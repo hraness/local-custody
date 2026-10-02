@@ -180,6 +180,9 @@ live control-socket round trip under Node.
 Releases are immutable `v*` tags. The release workflow reruns the full check,
 publishes a GitHub Release, and then publishes the same version to npm through
 the tag-only `npm-release` environment and OIDC trusted publishing.
+Merging a `package.json` version bump to `main` creates its annotated `v*` tag
+automatically once CI passes on that commit; pushing the tag by hand still
+works.
 
 ## License
 
