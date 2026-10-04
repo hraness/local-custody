@@ -19,6 +19,39 @@ bun add @hraness/local-custody
 The npm package includes a prebuilt Rust sidecar for Linux x64 and macOS arm64
 and x64. The published TypeScript types support `erasableSyntaxOnly`.
 
+## Create and read a private file
+
+On Unix, save this as `private-file.ts` in your project and run
+`bun private-file.ts`. Use a working directory whose parent paths are not
+symbolic links. The sample stores non-sensitive text, not a credential.
+
+```ts
+import { join } from "node:path";
+import {
+  ensurePrivateDirectory,
+  createPrivateFileOnce,
+  readPrivateFile,
+} from "@hraness/local-custody";
+
+const directory = await ensurePrivateDirectory(join(process.cwd(), ".private-demo"));
+const result = await createPrivateFileOnce(directory, "note.txt", "Sample note\n");
+const bytes = await readPrivateFile(join(directory, "note.txt"), 1024);
+console.log(result, bytes.byteLength);
+```
+
+The first run prints `created 12`. It creates a private directory and a
+mode-0600 file. A second run prints `existing 12` if the sample file is unchanged;
+`createPrivateFileOnce` never replaces that name. An `existing` result alone does
+not validate the existing file, so keep the read check.
+
+The parent directory must exist. If a path fails ownership, mode, or link
+checks, inspect it before retrying; do not delete it or loosen permissions to
+make the check pass. For intentional replacement, `publishPrivateFile` renames
+new content over the target and accepts a `beforeCommit` check. These files are
+not encrypted. See [Windows limits](#windows) before using this example there,
+and [failure messages](#explain-failures-to-people) to report errors without
+printing private paths or contents.
+
 ## Entrypoints
 
 | Subpath | Exports |
