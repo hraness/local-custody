@@ -3,7 +3,7 @@
 Report suspected vulnerabilities through GitHub's private vulnerability
 reporting for the hraness/local-custody repository. Do not include sensitive
 details, tokens, cookies, receipts, account data, or provider configuration in
-a public issue.
+a public issue. If GitHub reporting is unavailable, email [hraness@pm.me](mailto:hraness@pm.me).
 
 Security fixes target the latest stable version tag. Maintainers will
 coordinate disclosure and publish a new immutable tag after the complete gate
